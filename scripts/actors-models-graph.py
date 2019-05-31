@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
+
 import argparse
 import os
 import sys
@@ -13,11 +15,12 @@ def serializable_tags():
     try:
         Tag.serializable()
     except AttributeError:
-        print >> sys.stderr, 'Patching leapp Tags'
+        print('Patching leapp Tags', file=sys.stderr)
+
         def serialize(cls):
             return {'name': cls.__name__}
         Tag.serialize = classmethod(serialize)
-        print >> sys.stderr, 'Done'
+        print('Done', file=sys.stderr)
 
 
 def basic_graph(actors, model_consumers, missing_producer_actors, missing_consumer_actors, file_handle):
@@ -90,18 +93,18 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if os.path.exists(args.dot):
-        print >> sys.stderr, 'Already exists: {path}'.format(path=args.dot)
+        print('Already exists: {path}'.format(path=args.dot), file=sys.stderr)
         sys.exit(1)
 
     #repository = find_and_scan_repositories('leapp-repository/repos/system_upgrade/el7toel8/', include_locals=True)
     repository = find_and_scan_repositories(args.repo, include_locals=True)
     if not repository:
-        print >> sys.stderr, 'Could not find repository in specified path: {path}'.format(path=args.repo)
+        print('Could not find repository in specified path: {path}'.format(path=args.repo), file=sys.stderr)
         sys.exit(1)
     try:
         repository.load()
     except Exception as e:
-        print >> sys.stderr, 'Could not load repository:\n{message}'.format(message=e.message)
+        print('Could not load repository:\n{message}'.format(message=e.message), file=sys.stderr)
         sys.exit(1)
 
     serializable_tags()
@@ -114,9 +117,8 @@ if __name__ == '__main__':
     actors = [Actor(name=actor.class_name,
                     consumes=tuple(c.serialize()['name'] for c in actor.consumes),
                     produces=tuple(p.serialize()['name'] for p in actor.produces),
-                    tags=filter(lambda elem: elem != 'IPUWorkflowTag', tuple(t.serialize()['name'] for t in actor.tags))
-                    #tags=filter(lambda elem: elem != 'ipu', tuple(t.name for t in actor.tags))
-                  ) for actor in repository.actors]
+                    tags=[elem for elem in tuple(t.serialize()['name'] for t in actor.tags) if elem != 'IPUWorkflowTag']
+                    ) for actor in repository.actors]
 
     # mapping from tag to actors
     # key: tag, value: actor name
@@ -181,5 +183,5 @@ if __name__ == '__main__':
         # closing tag
         file_handle.write('}\n')
 
-    print >> sys.stderr, "To generate figure with graph, use dot tool:"
-    print >> sys.stderr, "dot -Tpng -O {dot_file}".format(dot_file=args.dot)
+    print("To generate figure with graph, use dot tool:", file=sys.stderr)
+    print("dot -Tpng -O {dot_file}".format(dot_file=args.dot), file=sys.stderr)
