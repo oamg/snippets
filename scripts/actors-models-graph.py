@@ -3,7 +3,7 @@
 from __future__ import print_function
 
 import argparse
-import os
+import re
 import sys
 
 from collections import namedtuple
@@ -39,6 +39,11 @@ def basic_graph(actors, model_consumers, missing_producer_actors, missing_consum
                                                                                consumer=consumer,
                                                                                model=model)
                 file_handle.write(line)
+
+    # set dialog shape for actors with dialogs
+    file_handle.write('\n\t// mark actors that have dialogs\n')
+    for actor in [a for a in actors if a.dialogs]:
+        file_handle.write('\t{actor} [shape=box]\n'.format(actor=actor.name))
 
     # colorize missing actors that produce certain models
     file_handle.write('\n\t// colorize missing actors that produce certain models\n')
@@ -94,17 +99,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('-r', '--repo', required=True, help='path to repository with actors')
     parser.add_argument('-d', '--dot', default='graph.dot', help='path to a dot file that should be generated')
+    parser.add_argument('-x', '--regex', help='A regex that actors name should match')
     clusters_help = ('cluster actors by tags\n'
                      'WARNING: the edges are too close to each other, so it is usually hard to say which label '
                      'belongs to which edge')
     parser.add_argument('-c', '--clusters', default=False, action='store_true', help=clusters_help)
     args = parser.parse_args()
 
-    if os.path.exists(args.dot):
-        print('Already exists: {path}'.format(path=args.dot), file=sys.stderr)
-        sys.exit(1)
-
-    # repository = find_and_scan_repositories('leapp-repository/repos/system_upgrade/el7toel8/', include_locals=True)
     repository = find_and_scan_repositories(args.repo, include_locals=True)
     if not repository:
         print('Could not find repository in specified path: {path}'.format(path=args.repo), file=sys.stderr)
@@ -117,16 +118,21 @@ if __name__ == '__main__':
 
     serializable_tags()
 
-    Actor = namedtuple('Actor', ['name', 'consumes', 'produces', 'tags'])
+    Actor = namedtuple('Actor', ['name', 'consumes', 'produces', 'tags', 'dialogs'])
     # Actor.name - vertex name
     # Actor.consumes - target vertex for directed edge
     # Actor.produces - source vertex for directed edge
     # Actor.tags - cluster
+    # Actor.dialogs - changes shape of the vertex if actor has dialogs
     actors = [Actor(name=actor.class_name,
                     consumes=tuple(c.serialize()['name'] for c in actor.consumes),
                     produces=tuple(p.serialize()['name'] for p in actor.produces),
-                    tags=[elem for elem in tuple(t.serialize()['name'] for t in actor.tags) if elem != 'IPUWorkflowTag']
+                    tags=[elem for elem in tuple(t.serialize()['name'] for t in actor.tags)
+                          if elem != 'IPUWorkflowTag'],
+                    dialogs=[d.scope for d in getattr(actor, "dialogs", [])]
                     ) for actor in repository.actors]
+    if args.regex:
+        actors = [a for a in actors if re.match(args.regex, a.name)]
 
     # mapping from tag to actors
     # key: tag, value: actor name
@@ -152,12 +158,14 @@ if __name__ == '__main__':
     missing_consumer_actors = [Actor(name=model + 'Consumer',
                                      consumes=(model,),
                                      produces=(),
-                                     tags=()
+                                     tags=(),
+                                     dialogs=()
                                      ) for model in models_missing_consumer]
     missing_producer_actors = [Actor(name=model + 'Producer',
                                      consumes=(),
                                      produces=(model,),
-                                     tags=()
+                                     tags=(),
+                                     dialogs=()
                                      ) for model in models_missing_producer]
 
     actors.extend(missing_consumer_actors)
