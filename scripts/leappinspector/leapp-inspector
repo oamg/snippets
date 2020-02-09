@@ -1,0 +1,309 @@
+#!/usr/bin/python3
+
+import re
+import sqlite3
+import sys
+
+from pprint import pprint as pp
+
+"""
+Just devel notes and devel mess ;-)
+
+TODO: check compatibility
+ - do not compare whole schema but at least simple check that set of table
+   is unchanged, ...
+TODO: specifie values
+ - currently everything will be hardcoded; I will keep cmdline processing
+   for later as the hardest part of the whole script is to come up with
+   intuitive cmdline
+TODO: work with various executions; but by defaoult use the last one
+TODO: write all todos
+ - I am lazy to write the whole idea of the script right now
+
+- currently it's below just devel mess. I do care about design so much in this
+  PoC phase. But thinkabout refactoring with classes like: messages, execution,
+  ... to have more modular, intuitive code. E.g. the get_status function to get
+  information about status of an execution. It's expected people will use cmd
+  like status to get rough information about the result of the execution,
+  but it would be nice to have it maybe separated in the own class to do all
+  needed stuff.
+- as well, think about more simplification of SQL - what about just read
+  data and filter everyhing in the code? It will be slower, ... - but who
+  will be able to recognize the difference?
+"""
+
+class LeappDatabaseEmpty(Exception):
+    pass
+
+
+class LogLevels():
+    ERROR = 0
+    WARNING = 1
+    INFO = 2
+    DEBUG = 3
+
+class Configuration:
+    def __init__(self):
+        # process cmdline
+        raise NotImplementedError()
+
+def print_row(row):
+    print(row)
+    for i in row.keys():
+        print("    {}: {}".format(i, row[i]))
+
+def print_rows(rows):
+    for row in rows:
+        print_row(row)
+
+# TODO: probably bad idea in the end; if there will not be better use for it
+# - like construction of sql cmds, merge both class together
+class Database(object):
+    """
+    Class to get various data about SQLite db in convenient way.
+    """
+
+    def __init__(self, db_file, debug=False):
+        if not db_file:
+            raise ValueError('Missing path to the db file.')
+        self._db_file = db_file
+        self._debug = debug
+        self._con = sqlite3.connect(db_file)
+        self._con.row_factory = sqlite3.Row
+        self._last_execution_cursor = None
+
+    def execute(self, cmd):
+        """Execute the cmd command and return cursor."""
+        sys.stderr.write("SQL execution: {}\n".format(cmd))
+        cursor = self._con.cursor()
+        cursor.execute(cmd)
+        self._last_execution_cursor = cursor
+        return cursor
+
+    def get_last_execution_column_names(self):
+        """Return names of columns of the last SQL cmd or empty list."""
+        if self._last_execution_cursor and self._last_execution_cursor.description:
+            return [i[0] for i in self._last_execution_cursor.description]
+        return []
+
+    def get_tables(self):
+        """Get list of tables."""
+        cursor = self.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        return [row["name"] for row in cursor.fetchall()]
+
+    def get_table_info(self, table):
+        raise NotImplementedError()
+
+
+class LeappDatabase(Database):
+    """
+    That's handler to get data from db.
+    """
+
+    def __init__(self, db_file='leapp.db'):
+        super(LeappDatabase, self).__init__(db_file)
+        execution = self.get_executions()[-1]
+        self._context = self._last_execution_context()
+
+    def get_executions(self):
+        cursor = self.execute("SELECT id,context,stamp FROM execution")
+        return cursor.fetchall()
+
+    def _last_execution_context(self):
+        executions = self.get_executions()
+        if not executions:
+            raise LeappDatabaseEmpty("Leapp has not been executed yet.")
+        return executions[-1]["context"]
+
+    def _get_execute_cond(self, table=None):
+        if table:
+            return ["{}.context = '{}'".format(table, self._context)]
+        return ["context = '{}'".format(self._context)]
+
+    def print_execution_info(self, execution):
+        """Print info about defined execution."""
+        # TODO: add info about used envars as well from the IPUConfig msg
+        # - to make it more robust, check whether such message exists, if not,
+        # do not crash, just skip it or report the missing data...
+        raise NotImplementedError()
+
+    def get_messages(self, msg_type=None, msg_topic=None, phase=None, actor=None):
+        cond = self._get_execute_cond()
+        if msg_topic:
+            cond.append("topic = '{}'".format(msg_topic))
+        if msg_type:
+            cond.append("type = '{}'".format(msg_type))
+        if actor:
+            cond.append("actor = '{}'".format(actor))
+        if phase:
+            cond.append("phase = '{}'".format(phase))
+        cmd = "SELECT * FROM messages_data WHERE {}".format(' AND '.join(cond))
+        rows = self.execute(cmd).fetchall()
+        # TODO: think about this f() yet, what exactly will return
+        return rows
+
+    def get_execution_length(self, context=None):
+        """
+        Get information about length of execution.
+        """
+        raise NotImplementedError()
+
+    def get_audit_logs(self, actor=None, phase=None, event=None,
+                       level=None, since=None, till=None, ):
+        """
+        Get audit logs from the audit table.
+        """
+        cond = self._get_execute_cond("audit")
+        if level or since or till:
+            # level is possible to set only for log-message
+            # TODO: maybe rm this funcionality andput it into separate
+            # filter function?...
+            raise NotImplementedError()
+        if event:
+            cond.append("audit.event == '{}'".format(event))
+        if actor:
+            cond.append("data_source.actor == '{}'".format(actor))
+        if phase:
+            cond.append("data_source.phase == '{}'".format(phase))
+
+        # NOTE: this is special condition, which could be removed if needed.
+        # The point is, that in in the current shape, it's expected to get
+        # Especially data that can be visible in terminal; but I think it could
+        # be usefull to print error messages when occurs. As well, it's kind
+        # of filter now to not load ALL data.
+        # !! BUT !! the script can be written in the way, that all data are get
+        # from this function - including info about produced messages,
+        # content of those messages, ... and then filter everything in the
+        # script in python way
+        #   (+) basically just this one SQL cmd in the script
+        #   (+) probably more simple script
+        #   (-) loading all data from the db (but db_size < 100MB)
+        #   (-) it means that some functions will be little slower (<1s?)
+        # I just put the bunch of SQL commands here for fun. But don't worry
+        # to rewrite the script :)
+        # P.S. Even better, leapp could provide VIEW that care about that,
+        #      so we could drop the long sql cmd here.
+        cond.append("(audit.event != 'new-message' OR messages_data.topic == 'errors')")
+        cols = ["audit.id", "audit.event", "audit.stamp",
+                "audit.data_source_id", "audit.message_id",
+                "data_source.actor", "data_source.phase", "audit.data",
+                "messages_data.topic", "messages_data.type",
+                "messages_data.message_data"]
+        cmd = ("SELECT {cols} FROM audit"
+               " LEFT JOIN data_source ON data_source_id = data_source.id"
+               " LEFT JOIN messages_data ON audit.message_id = messages_data.id"
+               " WHERE {cond}"
+               .format(cond=' AND '.join(cond), cols=','.join(cols)))
+        return self.execute(cmd).fetchall()
+
+    # all get_.. below are implemented in naive way, ignoring execution
+    # - this is actually not possible to implement - unless we want to print
+    # - paths to all actors, scannint log messages like: "Starting actor discovery.."
+    #def get_all_actors(self):
+    #    """Return a set of all actors."""
+    #    rows = self.execute("SELECT actor FROM data_source").fetchall()
+    #    # some rows do not contain any source (is it valid?)
+    #    #
+    #    return {row["actor"] for row in rows if row[0]}
+
+    def get_productive_actors(self):
+        """Return a set of actors that produced a msg."""
+        where_cond = "WHERE {}".format(self._get_execute_cond()[0])
+        rows = self.execute("SELECT actor FROM messages_data {}".format(where_cond)).fetchall()
+        return {row["actor"] for row in rows}
+
+    def get_models(self):
+        """Return a set of models of produced msgs."""
+        where_cond = "WHERE {}".format(self._get_execute_cond()[0])
+        rows = self.execute("SELECT type FROM messages_data {}".format(where_cond)).fetchall()
+        return {row["type"] for row in rows}
+
+    def get_executed_phases(self):
+        """
+        Return phases of the workflow that have been executed (or reached)
+        in the execution order.
+        """
+        phases = list()
+        for log in self.get_audit_logs(event="log-message"):
+            if "Starting stage" in log["data"] and log["phase"] not in phases:
+                phases.append(log["phase"])
+        return phases
+
+    def get_executed_actors(self, phase=None):
+        """
+        Get executed actors in the order of execution.
+
+        Additionally, can be specified a phase which you are interested.
+        :param str phase: if specified, return only actors executed in the phase;
+        """
+        actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+        actors = list()
+        for log in self.get_audit_logs(event="log-message"):
+            match = actors_regexp.search(log["data"])
+            if not match:
+                continue
+            if not phase or (phase and phase == log["phase"]):
+                actors.append(match.group(1))
+        return actors
+
+    def get_last_executed_actor(self):
+        """
+        Get the last actor that has been executed.
+        """
+        return self.get_executed_actors()[-1]
+
+    def print_terminal_output(self):
+        """
+        Reconstruct the output on terminal.
+
+        The output doesn't have to be completely same, as order can be
+        sometimes changed - in the meaning that stderr and stdout of procesed
+        commands is printed in runtime and can be mixed, but in db they are
+        separated. There could be additional discrepancies - like missing
+        errors printed out of leapp completely.
+        """
+        # NOTE: Q: enable switch with/without debug, only stderr, only stdout,
+        # or even output related just to specific phase or actor?
+        # - does it make sense to provide anything from that?....
+        # - keep it stupid now, until all usecases are written and cmdline
+        #   designed
+        raise NotImplementedError()
+
+    def get_status(self):
+        """
+        Return status of the execution
+
+        The function should inform whether execution ended because of error,
+        checkout, inhibition or everything done.
+
+        It could be tricky because of the issue in the framework:
+          https://github.com/oamg/leapp/issues/609
+        As well, not sure whether we are able to tell the workflow execution
+        is completely finished.
+          TODO: investigate the messages in audit whether it is possible to
+                detect it
+        """
+        raise NotImplementedError()
+
+    def get_errors(self):
+        """
+        Get all raised errors
+        """
+        # FIXME: currently returns just msgs with the "errors" topic,
+        # but not sure whether there are not type of errors that could be
+        # caught just in audit. Investigate better.
+        # Note: what about log_error ??
+        # Again, think about returned format..
+        return self.get_messages(msg_topic="errors")
+
+    def get_reports(self):
+        """
+        Get all report messages.
+        """
+        return self.get_messages(msg_type="Report")
+
+
+
+if __name__ == '__main__':
+    db = LeappDatabase()
+    print(db.get_tables())
