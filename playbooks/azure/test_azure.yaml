@@ -1,0 +1,120 @@
+- hosts: all
+  vars:
+    # switch between "rhui" or "rhsm"
+    source: rhui
+  gather_facts: true
+  remote_user: root
+  become: yes
+  ignore_unreachable: yes
+  tasks:
+
+    - name: Check if this is a RHEL-7 machine
+      assert:
+        that:
+          - ansible_os_family == "RedHat"
+          - ansible_distribution_major_version|int == 7
+        fail_msg: "The machine is running a {{ ansible_os_family }} family OS version {{ ansible_distribution_major_version }}."
+
+    - name: Install public Leapp Copr repository
+      copy:
+        src: 'leapp-copr.repo'
+        dest: /etc/yum.repos.d
+
+    - name: upgrade all packages
+      yum:
+        name: '*'
+        state: latest
+        exclude:
+          - leapp
+          - leapp-repository
+
+    - name: gather upgrade info
+      command: yum history info
+      register: transaction
+      args:
+        warn: false
+
+    - name: Reboot if a new kernel was installed during the upgrade
+      reboot:
+      when: "'kernel' in transaction.stdout"
+
+    - name: Enable Extras repository
+      shell: yum-config-manager --enable \*extras-rpms
+
+    # we install a special branch build here
+    - name: Install Leapp and Leapp repository
+      shell: yum install -y 'leapp-0*HEAD*' 'leapp-repository-0.11*cloud_done*'
+
+    - name: Copy RHUI Leapp package
+      copy:
+        src: 'leapp-rhui-azure-1.0.0-1.el7.noarch.rpm'
+        dest: /root
+      register: azure_copied
+
+    - name: Install Leapp Azure special pkg
+      yum:
+        name: "{{ special_copied.dest }}"
+
+    # temp workaround
+    - name: Remove localrepo inhibitor
+      file:
+        path: /usr/share/leapp-repository/repositories/system_upgrade/el7toel8/actors/localreposinhibit/
+        state: absent
+
+    - name: Copy PES & repommaping data
+      copy:
+        src: "{{ item }}"
+        dest: /etc/leapp/files/
+      with_items:
+        - pes-events.json
+        - repomap.csv
+
+    - name: Add permit root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: "PermitRootLogin yes"
+
+    - name: Generate answerfile with most common options
+      shell: leapp answer --section "{{item}}" --add
+      with_items:
+        - remove_pam_pkcs11_module_check.confirm=True
+
+    - name: Run upgrade without RHSM
+      shell: LEAPP_UNSUPPORTED=1 LEAPP_DEVEL_SKIP_CHECK_OS_RELEASE=1 leapp upgrade --debug --no-rhsm
+      when: source == "rhui"
+
+    - name: Run upgrade with RHSM
+      shell: LEAPP_UNSUPPORTED=1 LEAPP_DEVEL_SKIP_CHECK_OS_RELEASE=1 leapp upgrade --debug
+      when: source == "rhsm"
+
+    - name: Reboot after upgrade
+      vars:
+        ansible_python_interpreter: /usr/bin/python2
+      reboot:
+      # wait 45 minutes which should be enough time for upgrade
+        reboot_timeout: 2700
+
+    - name: Check if release is RHEL 8
+      vars:
+        ansible_python_interpreter: /usr/bin/python2
+      shell: cat /etc/redhat-release
+      register: release
+      failed_when: "'Ootpa' not in release.stdout"
+
+    - debug:
+        var: release.stdout_lines
+
+    - name: Check if kernel is RHEL 8 one
+      vars:
+        ansible_python_interpreter: /usr/bin/python2
+      shell: uname -r
+      register: kernel
+      failed_when: "'el8' not in kernel.stdout"
+
+    - name: Check if we can install some RHEL8 package
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+      dnf:
+        name: alsa-utils-alsabat
+        state: present
+        
