@@ -713,12 +713,42 @@ class LeappInspectorCLI:
 # Subcommands
 # ###########
 
+class MessagesCLI(SubCommandBaseClass):
+    """
+    The message subcommand for actions with messages
+    """
+
+    name = "messages"
+    help_short_str = "Print produced messages"
+
+    def set_arguments(self):
+        self.subparser.add_argument("--list", dest="msgs", action="store_true",
+            help="List types of all produced messages.")
+        self.subparser.add_argument("--actor", dest="actor", default=None,
+            help="Print only messages produced by the actor.")
+        self.subparser.add_argument("--type", dest="msg_type", default=None,
+            help="Print only messages ot the specified type.")
+        self.subparser.add_argument("--phase", dest="phase", default=None,
+            help="Print only messages produced during the specified phase.")
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        if cmdline.msgs:
+            for actor in sorted(self.LeappDatabase.get_models()):
+                print("    {}".format(actor))
+            return
+        self.LeappDataPrinter.print_messages(
+            actor=cmdline.actor,
+            phase=cmdline.phase,
+            msg_type=cmdline.msg_type
+        )
+
 # ###################################
 # Some stuff related to main function
 # ###################################
 
 def set_default_subcommands(cli):
-    pass
+    cli.add_subcommand(MessagesCLI)
 
 if __name__ == '__main__':
     cli = LeappInspectorCLI()
