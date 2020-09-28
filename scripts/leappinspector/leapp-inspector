@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import argparse
 import os
 import re
 import sqlite3
@@ -8,12 +9,16 @@ import sys
 from pprint import pprint as pp
 
 """
-Just devel notes and devel mess ;-)
+The current code is written as library and tool in one file, as it's expected
+it will be copied oftenly; so for now, just one file to make copying simple.
+Installation is not needed. Just copy the script wherever you want and use it.
 
-TODO: specifie values
- - currently everything will be hardcoded; I will keep cmdline processing
-   for later as the hardest part of the whole script is to come up with
-   intuitive cmdline
+First part of this script contains all stuff related to the library (generic
+classes and function). In the second part you could find already implementation
+of subcommands for the tool.
+
+It's expected that people implement additional extensions / subcommands which
+serve well for them.
 """
 
 class LeappDatabaseEmpty(Exception):
@@ -25,12 +30,6 @@ class LogLevels():
     WARNING = 1
     INFO = 2
     DEBUG = 3
-
-
-class Configuration:
-    def __init__(self):
-        # process cmdline
-        raise NotImplementedError()
 
 
 def print_row(row):
@@ -365,7 +364,140 @@ class LeappDataPrinter(LeappDatabase):
         #   designed
         raise NotImplementedError()
 
+# #################################
+# Stuff related to the tool and CLI
+# #################################
+
+class SubCommandBaseClass():
+    """
+    This is base class for CLI subcommands of Leapp Inspector
+
+    To add new subcommand for the Leapp Inspector tool, just derive new class
+    and implement methods below. For registration of the subcommand use an
+    instance of LeappInspectorCLI class and call the add_subcommand method
+    giving the derived class as an input parameter. e.g.:
+        li_cli = LeappInspectorCLI()
+        li_cli.add_subcommand(<SubCommandClass>)
+    """
+
+    name = None
+    """
+    Set the subcommand name in the derived subclasses.
+
+    The string is the one expected to use on the commandline to execute
+    specific subcommand. E.g. if name = "mycmd", then on  cmdline:
+        leapp-inspector mycmd
+    does the thing.
+    """
+
+    def __init__(self, leapp_inspector_cli):
+        if type(self) is SubCommandBaseClass:
+            raise Exception("The base class cannot be instantiated directly.")
+        if not isinstance(leapp_inspector_cli, LeappInspectorCLI):
+            raise ValueError("leapp_inspector_cli must be instance of LeappInspectorCLI")
+        self.li_cli = leapp_inspector_cli
+        self._register_cmd()
+
+    @property
+    def cmd_name(self):
+        if not self.name or not isinstance(self.name, str):
+            raise ValueError(
+                "The <class>.name string must be specified in derived classes."
+                " E.g. 'messages'."
+            )
+        return self.name
+
+    def _register_cmd(self):
+        self.subparser = self.li_cli.add_parser(self.cmd_name)
+        self.set_arguments()
+
+    def set_arguments(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
+    def process(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
+
+class LeappInspectorCLI:
+    """
+    The main class of Leapp Inspector for CLI
+
+    Adjustable parsing of the CLI based on registered sub-commands.
+    """
+
+    def __init__(self):
+        # TODO: replace _cmd_func_map by parser.set_default(...)
+        self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
+        self._cmd_func_map = {"help": self._parser.print_help}
+        self._add_top_lvl_options()
+        self._subparsers = self._parser.add_subparsers(
+            title="Subcommands",
+            help="subcommands help",
+            dest="subcmd",
+        )
+        self.cmdline = None
+
+    def add_parser(self, name, **kwargs):
+        """
+        Return subparser that can be used and adjusted by subcommands.
+        """
+        return self._subparsers.add_parser(name, *kwargs)
+
+
+    def add_subcommand(self, subcmd_class):
+        """
+        Add/register new subcommand for the Leapp Inspector tool
+
+        Expected class derived from SubCommandBaseClass.
+        """
+        subcmd = subcmd_class(self)
+        self._cmd_func_map[subcmd.cmd_name] = subcmd.process
+
+    def parse(self):
+        """
+        Parse cmdline input
+        """
+        self.cmdline =  self._parser.parse_args()
+
+    def process(self):
+        """
+        Execute the process method of the chosen subcommand.
+
+        It's the process method of the subcommand registered by add_subcommand()
+        """
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self.cmdline.subcmd:
+            self._cmd_func_map[self.cmdline.subcmd]()
+        else:
+            # no subcommand specified -> print help
+            self._cmd_func_map["help"]()
+
+
+    def _add_top_lvl_options(self):
+        self._parser.add_argument(
+            "--db", metavar="FILE", dest="db_file", default="leapp.db",
+            help=(
+                "Specify the path to the leapp.db file. By default"
+                " looks for leapp.db file in the current (script) directory.")
+        )
+
+
+# ###########
+# Subcommands
+# ###########
+
+# ###################################
+# Some stuff related to main function
+# ###################################
+
+def set_default_subcommands(cli):
+    pass
 
 if __name__ == '__main__':
+    cli = LeappInspectorCLI()
+    set_default_subcommands(cli)
+    cli.parse()
+    cli.process()
     db = LeappDatabase()
     print(db.get_tables())
