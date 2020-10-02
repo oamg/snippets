@@ -27,6 +27,7 @@
         exclude:
           - leapp
           - leapp-repository
+          - python2-leapp
 
     - name: gather upgrade info
       command: yum history info
@@ -43,7 +44,7 @@
 
     # we install a special branch build here
     - name: Install Leapp and Leapp repository
-      shell: yum install -y 'leapp-0*HEAD*' 'leapp-repository-0.11*cloud_done*'
+      shell: yum install -y 'leapp-0*HEAD*' 'leapp-repository-0.11*microsoft*'
 
     - name: Copy RHUI Leapp package
       copy:
@@ -53,13 +54,7 @@
 
     - name: Install Leapp Azure special pkg
       yum:
-        name: "{{ special_copied.dest }}"
-
-    # temp workaround
-    - name: Remove localrepo inhibitor
-      file:
-        path: /usr/share/leapp-repository/repositories/system_upgrade/el7toel8/actors/localreposinhibit/
-        state: absent
+        name: "{{ azure_copied.dest }}"
 
     - name: Copy PES & repommaping data
       copy:
