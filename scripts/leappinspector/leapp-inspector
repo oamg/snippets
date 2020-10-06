@@ -163,13 +163,20 @@ class LeappDatabase(Database):
                .format(cond=' AND '.join(cond), cols=','.join(cols)))
         return self.execute(cmd).fetchall()
 
+    def get_logs(self, phase=None, actor=None):
+        """
+        Return audit logs.
+        """
+        logs = self._filter_data(event="log-message", phase=phase, actor=actor)
+        return list(logs)
+
     def _filter_data(self, actor=None, phase=None, event=None):
         for row in self._data:
-            if actor and actor != row['actor']:
+            if actor is not None and actor != row['actor']:
                 continue
-            if phase and phase != row['phase']:
+            if phase is not None and phase != row['phase']:
                 continue
-            if event and event != row['event']:
+            if event is not None and event != row['event']:
                 continue
             yield row
 
