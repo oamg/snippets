@@ -713,6 +713,19 @@ class LeappInspectorCLI:
 # Subcommands
 # ###########
 
+
+class HelpCLI(SubCommandBaseClass):
+
+    name = "help"
+    help_short_str = "Print this help"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        self.li_cli.print_help()
+
+
 class MessagesCLI(SubCommandBaseClass):
     """
     The message subcommand for actions with messages
@@ -750,11 +763,13 @@ class MessagesCLI(SubCommandBaseClass):
             recursive=cmdline.recursive,
         )
 
+
 # ###################################
 # Some stuff related to main function
 # ###################################
 
 def set_default_subcommands(cli):
+    cli.add_subcommand(HelpCLI)
     cli.add_subcommand(MessagesCLI)
 
 if __name__ == '__main__':
