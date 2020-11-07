@@ -425,6 +425,12 @@ class SubCommandBaseClass():
         return self.help_short_str
 
 
+    def set_arguments(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
+    def process(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
     def _register_cmd(self):
         self.subparser = self.li_cli.add_parser(
             self.cmd_name,
@@ -432,11 +438,17 @@ class SubCommandBaseClass():
         )
         self.set_arguments()
 
-    def set_arguments(self):
-        raise NotImplementedError("Must be implemented in derived class.")
+    @property
+    def LeappDatabase(self):
+        return self.li_cli.LeappDatabase
 
-    def process(self):
-        raise NotImplementedError("Must be implemented in derived class.")
+    @property
+    def LeappDataPrinter(self):
+        return self.li_cli.LeappDataPrinter
+
+    @property
+    def cmdline(self):
+        return self.li_cli.cmdline
 
 
 class LeappInspectorCLI:
