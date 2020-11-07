@@ -414,6 +414,86 @@ class LeappDataPrinter(LeappDatabase):
             print()
         self._print_tail()
 
+    def print_actor(self, actor_name, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+        """
+        Print information about the specified actor.
+
+        It's possible to set the level of logs that should be printed as some
+        actors could provide big amount of logs that could reduce readability
+        of the output.
+
+        Printed logs usually contains metadata. It's possible to hide metadata
+        and print the pure data only (like printed in terminal during the leapp
+        execution).
+        """
+        def get_metadata(actor_name):
+            # this could be possibly later replace by function like
+            # self.get_actor(actor_name)
+            # of course, with additional data like produced msgs, ....
+            actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+            for log in self._filter_data(event="log-message"):
+                match = actors_regexp.search(log["data"])
+                if match and match.group(1) == actor_name:
+                    return {
+                        "phase": log["phase"],
+                        "stamp": log["stamp"],
+                    }
+            return {}
+
+        msgs = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+        actor = get_metadata(actor_name)
+        print("Actor: {}".format(actor_name))
+        print("Executed: {}".format(actor.get("stamp", None) is not None))
+        print("Phase: {}".format(actor.get("phase","")))
+        print("Started: {}".format(actor.get("stamp","")))
+        print("Produced messages:")
+        if msgs:
+            for msg in msgs:
+                print("    - {}".format(msg))
+        else:
+            print("    ----")
+
+        print("Executed shell commands:")
+        cmd_regexp = re.compile(r"External command has started: (.+\])\",")
+        cmds = []
+        for log in self.get_logs(actor=actor_name):
+            match = cmd_regexp.search(log["data"])
+            if match:
+                cmds.append(match.group(1))
+        if cmds:
+            for cmd in cmds:
+                print("    - {}".format(cmd))
+        else:
+            print("    ----")
+
+        print("Logs:")
+        log = None
+        for log in self.get_logs(actor=actor_name, log_level=log_level):
+            if terminal_like_logs:
+                print("    {}".format(json.loads(log["data"])["message"]))
+            else:
+                print("--- {}".format(log["data"]))
+        if not log:
+            print("    ----")
+
+    def print_actors(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+        """
+        Print various information about actors
+        """
+        # FIXME: currently prints info just about executed actors, add
+        # possibility of filtering, and detection of all actors!!
+        actors = self.get_executed_actors()
+        self._print_header("EXECUTED ACTORS")
+        try:
+            # pop actors in the execution order
+            self.print_actor(actors.pop(0), log_level=log_level, terminal_like_logs=terminal_like_logs)
+            for actor_name in actors:
+                self._print_separator()
+                self.print_actor(actor_name, log_level=log_level, terminal_like_logs=terminal_like_logs)
+        except IndexError:
+            print()
+        self._print_tail()
+
     def print_execution_info(self, execution):
         """Print info about defined execution."""
         # TODO: add info about used envars as well from the IPUConfig msg
