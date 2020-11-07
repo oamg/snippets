@@ -458,6 +458,10 @@ class LeappInspectorCLI:
         )
         self.cmdline = None
 
+        # internally stored instances of LeappDatabase and LeappDataPrinter
+        self._ld = None
+        self._ldp = None
+
     def print_help(self):
         self._parser.print_help()
 
@@ -497,6 +501,29 @@ class LeappInspectorCLI:
             # no subcommand specified -> print help
             self._cmd_func_map["help"]()
 
+    @property
+    def LeappDatabase(self):
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self._ld:
+            return self._ld
+        self._ld = LeappDatabase(
+            db_file=self.cmdline.db_file,
+            context=self.cmdline.context,
+        )
+        return self._ld
+
+    @property
+    def LeappDataPrinter(self):
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self._ldp:
+            return self._ldp
+        self._ldp = LeappDataPrinter(
+            db_file=self.cmdline.db_file,
+            context=self.cmdline.context,
+        )
+        return self._ldp
 
     def _add_top_lvl_options(self):
         self._parser.add_argument(
