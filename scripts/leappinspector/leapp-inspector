@@ -219,6 +219,13 @@ class LeappDatabase(Database):
         """
         raise NotImplementedError()
 
+    def get_actors(self):
+        """
+        Return a set of discovered actors
+        """
+        # for row in self.get_logs(phase=""):
+        raise NotImplementedError("Requires change in the framework first")
+
     def get_productive_actors(self):
         """
         Return a set of actors that produced a msg
