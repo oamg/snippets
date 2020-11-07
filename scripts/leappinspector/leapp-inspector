@@ -142,27 +142,11 @@ class LeappDatabase(Database):
             return ["{}.context = '{}'".format(table, self._context)]
         return ["context = '{}'".format(self._context)]
 
-    def _get_audit_logs(self, actor=None, phase=None, event=None,
-                       level=None, since=None, till=None, ):
+    def _get_audit_logs(self):
         """
         Get audit logs from the audit table.
         """
-        # NOTE:
-        # The input parameters are kind of useless now as all data are going
-        # to be read always. But keeping this historic code for now just
-        # in case of performance improvement need in future.
         cond = self._get_execute_cond("audit")
-        if level or since or till:
-            # level is possible to set only for log-message
-            # TODO: maybe rm this funcionality andput it into separate
-            # filter function?...
-            raise NotImplementedError()
-        if event:
-            cond.append("audit.event == '{}'".format(event))
-        if actor:
-            cond.append("data_source.actor == '{}'".format(actor))
-        if phase:
-            cond.append("data_source.phase == '{}'".format(phase))
 
         # NOTE: enable this condition if you want to get just data visible
         # on terminal...
