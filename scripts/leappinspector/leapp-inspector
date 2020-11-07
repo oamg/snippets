@@ -730,6 +730,12 @@ class MessagesCLI(SubCommandBaseClass):
             help="Print only messages ot the specified type.")
         self.subparser.add_argument("--phase", dest="phase", default=None,
             help="Print only messages produced during the specified phase.")
+        self.subparser.add_argument("--recursive-expand", dest="recursive", action="store_true",
+            help=(
+                "Expand all JSON data recursively. IOW, any json encoded"
+                 " as a string is decoded. Try it with the Report type to see"
+                 " the difference."
+        ))
 
     def process(self):
         cmdline = self.li_cli.cmdline
@@ -740,7 +746,8 @@ class MessagesCLI(SubCommandBaseClass):
         self.LeappDataPrinter.print_messages(
             actor=cmdline.actor,
             phase=cmdline.phase,
-            msg_type=cmdline.msg_type
+            msg_type=cmdline.msg_type,
+            recursive=cmdline.recursive,
         )
 
 # ###################################
