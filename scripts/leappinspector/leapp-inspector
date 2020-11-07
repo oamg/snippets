@@ -838,6 +838,24 @@ class ActorsCLI(SubCommandBaseClass):
         )
 
 
+class ExecutionsCLI(SubCommandBaseClass):
+
+    name = "executions"
+    help_short_str = "Print discovered executions of leapp on the machine"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        line_fmt = "{:36} | {:27}"
+        self.LeappDataPrinter._print_header("Executions of Leapp")
+        print(line_fmt.format("Execution", "Timestamp"))
+        print(line_fmt.format("-"*36, "-"*27))
+        for row in self.LeappDataPrinter.get_executions():
+            print(line_fmt.format(row["context"], row["stamp"]))
+
+
 # ###################################
 # Some stuff related to main function
 # ###################################
@@ -846,6 +864,7 @@ def set_default_subcommands(cli):
     cli.add_subcommand(HelpCLI)
     cli.add_subcommand(ActorsCLI)
     cli.add_subcommand(MessagesCLI)
+    cli.add_subcommand(ExecutionsCLI)
 
 if __name__ == '__main__':
     cli = LeappInspectorCLI()
