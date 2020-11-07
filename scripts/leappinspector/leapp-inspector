@@ -116,11 +116,15 @@ class Database(object):
 class LeappDatabase(Database):
     """
     That's handler to get data from db.
+
+    The class provides methods to obtain various data from db for another
+    processing. If not specified, the obtained data are related just to the
+    last execution (context) of leapp.
     """
 
-    def __init__(self, db_file='leapp.db'):
+    def __init__(self, db_file='leapp.db', context=None):
         super(LeappDatabase, self).__init__(db_file)
-        self._context = self._last_execution_context()
+        self._context = context if context else self._last_execution_context()
         self._data = self._get_audit_logs()
 
     def get_executions(self):
@@ -309,10 +313,14 @@ class LeappDatabase(Database):
 class LeappDataPrinter(LeappDatabase):
     """
     Print various leapp data in suitable format for reading.
+
+    Just extend the LeappDatabase class with readable printers.
+    It can be used to simplify additional implementation
+    of the "main-subcommand" functions.
     """
 
-    def __init__(self, db_file='leapp.db'):
-        super(LeappDataPrinter, self).__init__(db_file)
+    def __init__(self, db_file='leapp.db', context=None):
+        super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
 
     def print_execution_info(self, execution):
         """Print info about defined execution."""
