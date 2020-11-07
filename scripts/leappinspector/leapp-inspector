@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -337,8 +338,49 @@ class LeappDataPrinter(LeappDatabase):
     of the "main-subcommand" functions.
     """
 
+    FULL_SEP_CHAR = "#"
+    SIMPLE_SEP_CHAR = "-"
+
     def __init__(self, db_file='leapp.db', context=None):
         super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
+        self._width = 70
+
+    def _print_header(self, header_title):
+        print("{sep}\n{title}\n{sep}".format(
+            sep=self.FULL_SEP_CHAR*self._width,
+            title=header_title.center(self._width)
+        ))
+
+    def _print_separator(self, full=False, msg=""):
+        sep = self.FULL_SEP_CHAR if full else self.SIMPLE_SEP_CHAR
+        if msg:
+            msg = " {} ".format(msg)
+        print(msg.center(self._width, sep))
+
+    def _print_tail(self):
+        self._print_separator(full=True)
+
+    @staticmethod
+    def print_message(msg):
+        for i in ("stamp", "actor", "phase", "type"):
+            print("{}: {}".format(i.capitalize(), msg[i]))
+        data = json.dumps(json.loads(msg["message_data"]), indent=4, sort_keys=True)
+        print("Message_data:\n{}".format(data))
+
+    def print_messages(self, actor=None, phase=None, msg_type=None):
+        """
+        TODO:
+        """
+        msgs = self.get_messages(actor=actor, phase=phase, msg_type=msg_type)
+        self._print_header("PRODUCED MESSAGES")
+        try:
+            LeappDataPrinter.print_message(msgs.pop())
+            for msg in msgs:
+                self._print_separator()
+                LeappDataPrinter.print_message(msg)
+        except IndexError:
+            print()
+        self._print_tail()
 
     def print_execution_info(self, execution):
         """Print info about defined execution."""
