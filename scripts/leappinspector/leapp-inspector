@@ -37,6 +37,12 @@ class LogLevels():
     DEBUG = 3
 
 
+class ActorSelector:
+    ANY = "any"
+    EXECUTED = "executed"
+    PRODUCER = "producer"
+
+
 def print_row(row):
     """
     Pretty print of a row obtained from DB
@@ -764,12 +770,81 @@ class MessagesCLI(SubCommandBaseClass):
         )
 
 
+class ActorsCLI(SubCommandBaseClass):
+    """
+    The actor subcommand for actions with actors
+    """
+
+    name = "actors"
+    help_short_str = "Print various information about actors"
+
+    _log_level_map = {
+        "ERROR": LogLevels.ERROR,
+        "WARNING": LogLevels.WARNING,
+        "INFO": LogLevels.INFO,
+        "DEBUG": LogLevels.DEBUG
+    }
+
+    def set_arguments(self):
+        group = self.subparser.add_argument_group('List options').add_mutually_exclusive_group()
+        # TODO: currently we can obtain only dirnames of actors, not names of actors,
+        # - which means we cannot effectively use this information right now.
+        # - propose change in leapp to be able to get name of every discovered actor
+        # group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
+        #    help="List all discovered actors")
+        group.add_argument("--list-executed", dest="list", action="store_const", const=ActorSelector.EXECUTED,
+            help="List all executed actors")
+        group.add_argument("--list-producers", dest="list", action="store_const", const=ActorSelector.PRODUCER,
+            help="List all actors that produced any messages")
+        group.add_argument("--actor", dest="actor", default=None,
+            help="Print data related just to the specified actor.")
+        self.subparser.add_argument("--log-level", dest="log_level", default="DEBUG",
+            choices=self._log_level_map.keys(),
+            help=(
+                "Print logs of the given level and lower. The DEBUG level"
+                " is the highest one and set by default. The ERROR level"
+                " is the lowest."
+            ))
+        self.subparser.add_argument("--terminal-like", dest="terminal_like", action="store_true",
+            help=(
+                "Logs are usually stored with additional metadata. Using this"
+                " option, logs are printed like they are printed in terminal"
+                " when leapp is executed - just indentation is added, for"
+                " better readability, on the beginning of every log."
+            ))
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        actors_dict = {
+            ActorSelector.ANY: self.LeappDataPrinter.get_actors,
+            ActorSelector.EXECUTED: self.LeappDataPrinter.get_executed_actors,
+            ActorSelector.PRODUCER: self.LeappDataPrinter.get_productive_actors,
+        }
+
+        if cmdline.list:
+            for actor in sorted(actors_dict[cmdline.list]()):
+                print("    {}".format(actor))
+            return
+        if cmdline.actor:
+            self.LeappDataPrinter.print_actor(
+                cmdline.actor,
+                log_level=self._log_level_map[cmdline.log_level],
+                terminal_like_logs=cmdline.terminal_like
+            )
+            return
+        self.LeappDataPrinter.print_actors(
+            log_level=self._log_level_map[cmdline.log_level],
+            terminal_like_logs=cmdline.terminal_like
+        )
+
+
 # ###################################
 # Some stuff related to main function
 # ###################################
 
 def set_default_subcommands(cli):
     cli.add_subcommand(HelpCLI)
+    cli.add_subcommand(ActorsCLI)
     cli.add_subcommand(MessagesCLI)
 
 if __name__ == '__main__':
