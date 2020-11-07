@@ -163,12 +163,33 @@ class LeappDatabase(Database):
                .format(cond=' AND '.join(cond), cols=','.join(cols)))
         return self.execute(cmd).fetchall()
 
-    def get_logs(self, phase=None, actor=None):
+    def get_logs(self, phase=None, actor=None, log_level=LogLevels.DEBUG):
         """
-        Return audit logs.
+        Get audit logs.
+
+        By default, all logs are returned. But it could be filtered by
+        specified phase, actor's name, or lower the log level (e.g. return just
+        error logs).
         """
+        level_map = {
+            "ERROR": LogLevels.ERROR,
+            "WARNING": LogLevels.WARNING,
+            "INFO": LogLevels.INFO,
+            "DEBUG": LogLevels.DEBUG
+        }
         logs = self._filter_data(event="log-message", phase=phase, actor=actor)
-        return list(logs)
+
+        for log in logs:
+            # the detection of log level is quite expensive operation because
+            # of the required decode of JSON object. So in case the DEBUG level
+            # just yield it.
+            if log_level == LogLevels.DEBUG:
+                yield log
+                continue
+            data = json.loads(log["data"])
+            # if the level is unkown to the map, understand it as the error lvl
+            if level_map.get(data["level"], LogLevels.ERROR) <= log_level:
+                yield log
 
     def _filter_data(self, actor=None, phase=None, event=None):
         for row in self._data:
