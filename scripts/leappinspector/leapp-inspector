@@ -698,6 +698,15 @@ class LeappInspectorCLI:
                 "Specify the path to the leapp.db file. By default"
                 " looks for leapp.db file in the current (script) directory.")
         )
+        self._parser.add_argument(
+            "--context", metavar="CONTEXT", dest="context", default=None,
+            help=(
+                "Specify the CONTEXT (execution of leapp) that should be"
+                " loaded and processed. By default the last leapp session"
+                " is processed when not specified. So see possible contexts"
+                " you can use e.g. `leapp-inspector contexts` cmd. Example"
+                " of context: '2548112d-3d20-49ca-908f-2b4b6b3bdb84'")
+        )
 
 
 # ###########
