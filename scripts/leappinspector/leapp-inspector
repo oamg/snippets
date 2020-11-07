@@ -390,6 +390,14 @@ class SubCommandBaseClass():
     does the thing.
     """
 
+    help_short_str = None
+    """
+    The short help message message summarizing the sub-command purpose.
+
+    It's the message you see next to your subcommand when call
+        leapp-inspector --help
+    """
+
     def __init__(self, leapp_inspector_cli):
         if type(self) is SubCommandBaseClass:
             raise Exception("The base class cannot be instantiated directly.")
@@ -407,8 +415,21 @@ class SubCommandBaseClass():
             )
         return self.name
 
+    @property
+    def help_short(self):
+        if not self.help_short_str or not isinstance(self.help_short_str, str):
+            raise ValueError(
+                "The <class>.help_short_str string must be specified in"
+                " derived classes."
+            )
+        return self.help_short_str
+
+
     def _register_cmd(self):
-        self.subparser = self.li_cli.add_parser(self.cmd_name)
+        self.subparser = self.li_cli.add_parser(
+            self.cmd_name,
+            help=self.help_short,
+        )
         self.set_arguments()
 
     def set_arguments(self):
@@ -428,7 +449,7 @@ class LeappInspectorCLI:
     def __init__(self):
         # TODO: replace _cmd_func_map by parser.set_default(...)
         self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
-        self._cmd_func_map = {"help": self._parser.print_help}
+        self._cmd_func_map = {}
         self._add_top_lvl_options()
         self._subparsers = self._parser.add_subparsers(
             title="Subcommands",
@@ -437,11 +458,14 @@ class LeappInspectorCLI:
         )
         self.cmdline = None
 
+    def print_help(self):
+        self._parser.print_help()
+
     def add_parser(self, name, **kwargs):
         """
         Return subparser that can be used and adjusted by subcommands.
         """
-        return self._subparsers.add_parser(name, *kwargs)
+        return self._subparsers.add_parser(name, **kwargs)
 
 
     def add_subcommand(self, subcmd_class):
