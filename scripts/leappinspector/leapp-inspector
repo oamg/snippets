@@ -6,6 +6,10 @@ import os
 import re
 import sqlite3
 import sys
+try:
+    from json.decoder import JSONDecodeError
+except ImportError:
+    JSONDecodeError = ValueError  # for Python2
 
 from pprint import pprint as pp
 
@@ -361,23 +365,51 @@ class LeappDataPrinter(LeappDatabase):
         self._print_separator(full=True)
 
     @staticmethod
-    def print_message(msg):
+    def _fmt_msg_data(data, recursive=False, stack=0):
+        try:
+            json_data = json.loads(data)
+        except JSONDecodeError:
+            # ignore these errors; not everything is json. just return
+            # the input argument
+            return data
+        except TypeError:
+            if not stack:
+                # on the top level (stack zero) the json is always expected for
+                # message data
+                raise
+            return data
+
+        # NOTE: the dict should be sufficient in most cases. I haven't realized
+        # any message we need to hanle specifically e.g. list values for the
+        # recursive processing. Add in case any example is discovered.
+        if recursive and isinstance(json_data, dict):
+            for key, val in json_data.items():
+                    json_data[key] = LeappDataPrinter._fmt_msg_data(
+                        val, recursive, stack + 1
+                    )
+        if stack > 0:
+            return json_data
+        return json.dumps(json_data, indent=4, sort_keys=True)
+
+
+    @staticmethod
+    def print_message(msg, recursive=False):
         for i in ("stamp", "actor", "phase", "type"):
             print("{}: {}".format(i.capitalize(), msg[i]))
-        data = json.dumps(json.loads(msg["message_data"]), indent=4, sort_keys=True)
+        data = LeappDataPrinter._fmt_msg_data(msg["message_data"], recursive=recursive)
         print("Message_data:\n{}".format(data))
 
-    def print_messages(self, actor=None, phase=None, msg_type=None):
+    def print_messages(self, actor=None, phase=None, msg_type=None, recursive=False):
         """
         TODO:
         """
         msgs = self.get_messages(actor=actor, phase=phase, msg_type=msg_type)
         self._print_header("PRODUCED MESSAGES")
         try:
-            LeappDataPrinter.print_message(msgs.pop())
+            LeappDataPrinter.print_message(msgs.pop(), recursive)
             for msg in msgs:
                 self._print_separator()
-                LeappDataPrinter.print_message(msg)
+                LeappDataPrinter.print_message(msg, recursive)
         except IndexError:
             print()
         self._print_tail()
