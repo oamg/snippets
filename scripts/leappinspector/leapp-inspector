@@ -885,6 +885,62 @@ class InteractiveCLI(SubCommandBaseClass):
         code.interact(local=_all_defs)
 
 
+class InspectionCLI(SubCommandBaseClass):
+    """
+    The inspection subcommand for fast (high-level) inspection of the leapp
+    execution.
+    """
+
+    name = "inspection"
+    help_short_str = "Print high lvl report about run of leapp [EXPERIMENTAL]"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        ldp = self.LeappDataPrinter
+        ldp._print_header("Inspection - summary data")
+        print("Number of leapp executions: {}".format(len(ldp.get_executions())))
+        print("Used Workflow: {}".format("(tbd)"))
+        print("Leapp execution command: {}".format("(tbd)"))
+        print("Used unsupported options? (tbd)")
+        print("Used Leapp envars: (tbd)")
+        print("Last executed phase: {}".format(ldp.get_last_executed_phase()))
+        print("Last executed actor: {}".format(ldp.get_last_executed_actor()))
+        print("Has been reported an error? {} (tbd)".format(1 == 1))
+        print("Has been reported an inhibitor? {} ".format(self._inhibitor_exist()))
+        ldp._print_header("Inspection - execution")
+        for is_phase, phase_type, name in self._iter_phases_and_actors():
+            if is_phase:
+                print("==> {}  ({})".format(name, phase_type))
+            else:
+                print("====> {}".format(name))
+            # TODO: add check & print of errors and crucial stuff
+
+    def _inhibitor_exist(self):
+        for msg in self.LeappDatabase.get_messages():
+            data = json.loads(msg["message_data"])
+            # FIXME: flags are going to be removed and replace
+            # by groups
+            # FIXME: when the failure is used?
+            # TODO: verify it works on leapp.db with inhibitor
+            if "inhibitor" in data.get("flags", []):
+                return True
+        return False
+
+    def _iter_phases_and_actors(self):
+        actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+        phase_regexp = re.compile(r"Starting stage (Before|Main|After)")
+        for log in self.LeappDatabase.get_logs():
+            match = phase_regexp.search(log["data"])
+            if match:
+                yield True, match.group(1) ,log["phase"]
+                continue
+            match = actors_regexp.search(log["data"])
+            if match:
+                yield False, None, match.group(1)
+
+
 # ###################################
 # Some stuff related to main function
 # ###################################
@@ -895,6 +951,7 @@ def set_default_subcommands(cli):
     cli.add_subcommand(MessagesCLI)
     cli.add_subcommand(ExecutionsCLI)
     cli.add_subcommand(InteractiveCLI)
+    cli.add_subcommand(InspectionCLI)
 
 if __name__ == '__main__':
     cli = LeappInspectorCLI()
