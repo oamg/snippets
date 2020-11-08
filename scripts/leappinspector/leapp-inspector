@@ -856,6 +856,35 @@ class ExecutionsCLI(SubCommandBaseClass):
             print(line_fmt.format(row["context"], row["stamp"]))
 
 
+class InteractiveCLI(SubCommandBaseClass):
+    """
+    The interactive subcommand to switch into the interactive Python mode.
+    """
+
+    name = "interactive"
+    help_short_str = "Switch to interactive Python mode for manual experimenting"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        self.LeappDataPrinter._print_header("Switching to interactive mode")
+        print(
+            "This functionality is supposed to be used just by people\n"
+            "that are familiar with the leapp-inspector source code."
+        )
+        print(
+            "Hint:\n"
+            "    Execute self.LeappDatabase or self.LeapDataPrint to get\n"
+            "    already initialized objects."
+        )
+        self.LeappDataPrinter._print_tail()
+        import code
+        _all_defs = globals().copy()
+        _all_defs.update(locals())
+        code.interact(local=_all_defs)
+
+
 # ###################################
 # Some stuff related to main function
 # ###################################
@@ -865,11 +894,10 @@ def set_default_subcommands(cli):
     cli.add_subcommand(ActorsCLI)
     cli.add_subcommand(MessagesCLI)
     cli.add_subcommand(ExecutionsCLI)
+    cli.add_subcommand(InteractiveCLI)
 
 if __name__ == '__main__':
     cli = LeappInspectorCLI()
     set_default_subcommands(cli)
     cli.parse()
     cli.process()
-    db = LeappDatabase()
-    print(db.get_tables())
