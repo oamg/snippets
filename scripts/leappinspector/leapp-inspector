@@ -317,20 +317,62 @@ class LeappDatabase(Database):
         """
         raise NotImplementedError()
 
-    def get_errors(self):
+    def _get_cmd_results(self, phase=None, actor=None, failed_only=False):
         """
-        Get all raised errors
+        Return an iterator over CMDs results.
+
+        Can be filtered to return just failed results.
         """
-        # TODO: investigate whether all errors are 'trapped' as msgs
-        # # Currently it returns just msgs with the "errors" topic,
-        # # but not sure whether there are not type of errors that could be
-        # # caught just in audit. Investigate better.
-        # # What about log_error ?? Shouldn't be treated here as well?...
-        # # In my case, I am usually interested about EVERYTHING what's an
-        # # error -> I want to see the whole 'set'
-        # # -- what about to extend the method by 'include_logs=True' or
-        # # -- 'only_messages=False'
-        return self.get_messages(msg_topic="errors")
+        for cmd_res in self._filter_data(event="process-result", phase=phase, actor=actor):
+            if failed_only:
+                if int(json.loads(cmd_res["data"])["result"]["exit_code"]):
+                    yield cmd_res
+            else:
+                yield cmd_res
+
+    def get_errors(self, phase=None, actor=None, check_logs=True, check_cmd_exit=False):
+        """
+        Get all raised errors (advice: read the whole docstring first!)
+
+        It's possible to filter errors for specific phase or actor. Currently
+        we can detect several possible types of errors:
+          a) an error reported as a message (ErrorModel) that is printed
+             in the generated report; it's covers situation like unhandled
+             crash of an actor or raised StopActorExecutionError
+          b) a log with the ERROR level; logger().error("...")
+          c) exit code of executed sub-shell command (via the run() function)
+
+        By default the a) and b) errors are snanned. The c) errors could be
+        false-positives as some subcommands are expected to return non-zero
+        exit code (e.g. when author wants to obtain false/true information
+        about something).
+
+        IMPORTANT INFO: Data about errors are stored under various keys!! For:
+          - a)      - see key: "messages_data"
+          - b) & c) - see key: "data"
+
+        Errors are sorted chronologically.
+        """
+        # FIXME: decide before the merge (fix or keep...) and remove the fixme
+        # comment:
+        # - Unify the output (doesn't matter whether error a), b), or c)) e.g.
+        # * via defined class; (no difference in access to data..)
+        # - Keep it as it is (it's not convenient, but....)
+        # ... and it this function/method really good idea at all?
+
+
+        errors = self.get_messages(msg_type="ErrorModel", phase=phase, actor=actor)
+
+        if check_logs:
+            for log in self.get_logs(phase=phase, actor=actor, log_level=LogLevels.ERROR):
+                errors.append(log)
+
+        if check_cmd_exit:
+            for cmd_res in self._get_cmd_results(phase=phase, actor=actor, failed_only=True):
+                errors.append(cmd_res)
+
+        # sorting via id is chronologic and safer than string "stamp"
+        return sorted(errors, key=lambda x: x["id"])
 
     def get_reports(self):
         """
