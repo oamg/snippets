@@ -937,7 +937,17 @@ class InspectionCLI(SubCommandBaseClass):
     help_short_str = "Print high lvl report about run of leapp [EXPERIMENTAL]"
 
     def set_arguments(self):
-        pass
+        self.subparser.add_argument("--paranoid", dest="is_paranoid", action="store_true",
+            help=(
+                "Set inspection to the paranoid mode. Print possible errors"
+                " when any sub command executed by actor return non-zero exit"
+                " code. This can produce a lot of 'false positive' messages"
+                " as many such failed subcommands are expected to be valid"
+                " output. E.g. when detecting whether something is set, is"
+                " expected the subcommand could return non-zero exit code."
+                " That's why the mode is called paranoid. But sometimes could"
+                " point on hidden issue.")
+        )
 
     def process(self):
         ldp = self.LeappDataPrinter
@@ -949,15 +959,34 @@ class InspectionCLI(SubCommandBaseClass):
         print("Used Leapp envars: (tbd)")
         print("Last executed phase: {}".format(ldp.get_last_executed_phase()))
         print("Last executed actor: {}".format(ldp.get_last_executed_actor()))
-        print("Has been reported an error? {} (tbd)".format(1 == 1))
-        print("Has been reported an inhibitor? {} ".format(self._inhibitor_exist()))
+        print("Has been reported an error? {}".format(self._error_exists()))
+        print("Has been reported an inhibitor? {}".format(self._inhibitor_exist()))
         ldp._print_header("Inspection - execution")
         for is_phase, phase_type, name in self._iter_phases_and_actors():
             if is_phase:
                 print("==> {}  ({})".format(name, phase_type))
             else:
                 print("====> {}".format(name))
-            # TODO: add check & print of errors and crucial stuff
+            errors = ldp.get_errors(actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
+            if not errors:
+                continue
+            ldp._print_separator(msg="(Possible) Errors")
+            for err in errors:
+                if err["data"]:
+                    print("--- {}".format(err["data"]))
+                else:
+                    ldp._print_separator()
+                    # TODO: work on pretty printer of errors
+                    LeappDataPrinter.print_message(err, True)
+            ldp._print_separator()
+
+
+    def _error_exists(self):
+        # Ok, currently this returns just errors that have been reported (ErrorModel)
+        # IOW, only fatal errors. Not errors logged used the logger.
+        if self.LeappDatabase.get_errors(check_logs=False, check_cmd_exit=False):
+            return True
+        return False
 
     def _inhibitor_exist(self):
         for msg in self.LeappDatabase.get_messages():
