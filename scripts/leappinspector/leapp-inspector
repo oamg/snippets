@@ -1,0 +1,1031 @@
+#!/usr/bin/python3
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import sys
+try:
+    from json.decoder import JSONDecodeError
+except ImportError:
+    JSONDecodeError = ValueError  # for Python2
+
+from pprint import pprint as pp
+
+"""
+The current code is written as library and tool in one file, as it's expected
+it will be copied oftenly; so for now, just one file to make copying simple.
+Installation is not needed. Just copy the script wherever you want and use it.
+
+First part of this script contains all stuff related to the library (generic
+classes and function). In the second part you could find already implementation
+of subcommands for the tool.
+
+It's expected that people implement additional extensions / subcommands which
+serve well for them.
+"""
+
+class LeappDatabaseEmpty(Exception):
+    pass
+
+
+class LogLevels():
+    ERROR = 0
+    WARNING = 1
+    INFO = 2
+    DEBUG = 3
+
+
+class ActorSelector:
+    ANY = "any"
+    EXECUTED = "executed"
+    PRODUCER = "producer"
+
+
+def print_row(row):
+    """
+    Pretty print of a row obtained from DB
+
+    It's supposed more for debugging & experimenting purposes
+    """
+    print(row)
+    for i in row.keys():
+        print("    {}: {}".format(i, row[i]))
+
+
+def print_rows(rows):
+    """
+    Print every row in pretty format (see print_row)
+    """
+    for row in rows:
+        print_row(row)
+
+
+class Database(object):
+    """
+    Class to get various data about SQLite db in convenient way.
+    """
+
+    def __init__(self, db_file, debug=False):
+        if not db_file:
+            raise ValueError('Missing path to the db file.')
+        if not os.path.exists(db_file):
+            raise EnvironmentError(
+                "The {} file doesn't exist. Specify the correct path to the"
+                " leapp database file.".format(db_file)
+        )
+
+        self._db_file = db_file
+        self._debug = debug
+        self._con = sqlite3.connect(db_file)
+        self._con.row_factory = sqlite3.Row
+        self._last_execution_cursor = None
+
+    def execute(self, cmd):
+        """
+        Execute the cmd command and return cursor.
+        """
+        if self._debug:
+            # To be compatible with Py2 - it's expected the script could be
+            # used on RHEL 7 system
+            sys.stderr.write("SQL execution: {}\n".format(cmd))
+        cursor = self._con.cursor()
+        cursor.execute(cmd)
+        self._last_execution_cursor = cursor
+        return cursor
+
+    def get_last_execution_column_names(self):
+        """
+        Return names of columns of the last SQL cmd or empty list.
+        """
+        if self._last_execution_cursor and self._last_execution_cursor.description:
+            return [i[0] for i in self._last_execution_cursor.description]
+        return []
+
+    def get_tables(self):
+        """
+        Get list of tables.
+        """
+        cursor = self.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        return [row["name"] for row in cursor.fetchall()]
+
+    def get_table_info(self, table):
+        """
+        Get information about a table.
+
+        Just in case it's needed, so no need to open the db using sqlite3
+        to be able to get info using `.schema` cmd.
+        """
+        cursor = self.execute(
+                    "SELECT * from sqlite_master WHERE type='table' AND name='{}'"
+                    .format(table))
+        return cursor.fetchall()
+
+
+class LeappDatabase(Database):
+    """
+    That's handler to get data from db.
+
+    The class provides methods to obtain various data from db for another
+    processing. If not specified, the obtained data are related just to the
+    last execution (context) of leapp.
+    """
+
+    def __init__(self, db_file='leapp.db', context=None):
+        super(LeappDatabase, self).__init__(db_file)
+        self._context = context if context else self._last_execution_context()
+        self._data = self._get_audit_logs()
+
+    def get_executions(self):
+        cursor = self.execute("SELECT id,context,stamp FROM execution")
+        return cursor.fetchall()
+
+    def _last_execution_context(self):
+        executions = self.get_executions()
+        if not executions:
+            raise LeappDatabaseEmpty("Leapp has not been executed yet.")
+        return executions[-1]["context"]
+
+    def _get_execute_cond(self, table=None):
+        if table:
+            return ["{}.context = '{}'".format(table, self._context)]
+        return ["context = '{}'".format(self._context)]
+
+    def _get_audit_logs(self):
+        """
+        Get audit logs from the audit table.
+        """
+        cond = self._get_execute_cond("audit")
+
+        # NOTE: enable this condition if you want to get just data visible
+        # on terminal...
+        # cond.append("(audit.event != 'new-message' OR messages_data.topic == 'errors')")
+        cols = ["audit.id", "audit.event", "audit.stamp",
+                "audit.data_source_id", "audit.message_id",
+                "data_source.actor", "data_source.phase", "audit.data",
+                "messages_data.topic", "messages_data.type",
+                "messages_data.message_data"]
+        cmd = ("SELECT {cols} FROM audit"
+               " LEFT JOIN data_source ON data_source_id = data_source.id"
+               " LEFT JOIN messages_data ON audit.message_id = messages_data.id"
+               " WHERE {cond}"
+               .format(cond=' AND '.join(cond), cols=','.join(cols)))
+        return self.execute(cmd).fetchall()
+
+    def get_logs(self, phase=None, actor=None, log_level=LogLevels.DEBUG):
+        """
+        Get audit logs.
+
+        By default, all logs are returned. But it could be filtered by
+        specified phase, actor's name, or lower the log level (e.g. return just
+        error logs).
+        """
+        level_map = {
+            "ERROR": LogLevels.ERROR,
+            "WARNING": LogLevels.WARNING,
+            "INFO": LogLevels.INFO,
+            "DEBUG": LogLevels.DEBUG
+        }
+        logs = self._filter_data(event="log-message", phase=phase, actor=actor)
+
+        for log in logs:
+            # the detection of log level is quite expensive operation because
+            # of the required decode of JSON object. So in case the DEBUG level
+            # just yield it.
+            if log_level == LogLevels.DEBUG:
+                yield log
+                continue
+            data = json.loads(log["data"])
+            # if the level is unkown to the map, understand it as the error lvl
+            if level_map.get(data["level"], LogLevels.ERROR) <= log_level:
+                yield log
+
+    def _filter_data(self, actor=None, phase=None, event=None):
+        for row in self._data:
+            if actor is not None and actor != row['actor']:
+                continue
+            if phase is not None and phase != row['phase']:
+                continue
+            if event is not None and event != row['event']:
+                continue
+            yield row
+
+    def get_messages(self, msg_type=None, phase=None, actor=None):
+        """
+        Get messages produced by actors.
+
+        Messages can be filtered to specified phase, actor, and message type
+        (alias model of the message, e.g. IPUConfig).
+        """
+        msgs = self._filter_data(event="new-message", phase=phase, actor=actor)
+        if msg_type:
+            return [msg for msg in msgs if msg["type"] == msg_type]
+        return list(msgs)
+
+    def get_execution_length(self, execution=None):
+        """
+        Get information about length of execution.
+        """
+        raise NotImplementedError()
+
+    def get_actors(self):
+        """
+        Return a set of discovered actors
+        """
+        # for row in self.get_logs(phase=""):
+        raise NotImplementedError("Requires change in the framework first")
+
+    def get_productive_actors(self):
+        """
+        Return a set of actors that produced a msg
+        """
+        return {msg["actor"] for msg in self.get_messages()}
+
+    def get_models(self):
+        """
+        Return a set of models of produced msgs
+        """
+        return {msg["type"] for msg in self.get_messages()}
+
+    def get_executed_phases(self):
+        """
+        Return phases of the workflow that have been executed (or reached)
+        in the execution order.
+        """
+        phases = list()
+        for log in self._filter_data(event="log-message"):
+            if "Starting stage" in log["data"] and log["phase"] not in phases:
+                phases.append(log["phase"])
+        return phases
+
+    def get_last_executed_phase(self):
+        """
+        Get the last phase that has been executed or None if no executed phase
+        detected
+
+        This doesn't mean that all actors in the phase has been executed. It
+        is possible even that phase has been interrupted by an error before
+        any actor could be be executed. It's just last phase, that has been
+        started regarding the audit logs.
+        """
+        try:
+            return self.get_executed_phases()[-1]
+        except IndexError:
+            return None
+
+    def get_executed_actors(self, phase=None):
+        """
+        Get executed actors in the order of execution.
+
+        Additionally, can be specified a phase which you are interested.
+        :param str phase: if specified, return only actors executed in the phase;
+        """
+        actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+        actors = list()
+        for log in self._filter_data(event="log-message"):
+            match = actors_regexp.search(log["data"])
+            if not match:
+                continue
+            if not phase or (phase and phase == log["phase"]):
+                actors.append(match.group(1))
+        return actors
+
+    def get_last_executed_actor(self):
+        """
+        Get the last actor that has been executed or None if no executed actor
+        detected
+        """
+        try:
+            return self.get_executed_actors()[-1]
+        except IndexError:
+            return None
+
+    def get_status(self):
+        """
+        Return status of the execution
+
+        The function should inform whether execution ended because of error,
+        checkout, inhibition or everything done.
+
+        It could be tricky because of the issue in the framework:
+          https://github.com/oamg/leapp/issues/609
+        As well, not sure whether we are able to tell the workflow execution
+        is completely finished.
+          TODO: investigate the messages in audit whether it is possible to
+                detect it
+        """
+        raise NotImplementedError()
+
+    def _get_cmd_results(self, phase=None, actor=None, failed_only=False):
+        """
+        Return an iterator over CMDs results.
+
+        Can be filtered to return just failed results.
+        """
+        for cmd_res in self._filter_data(event="process-result", phase=phase, actor=actor):
+            if failed_only:
+                if int(json.loads(cmd_res["data"])["result"]["exit_code"]):
+                    yield cmd_res
+            else:
+                yield cmd_res
+
+    def get_errors(self, phase=None, actor=None, check_logs=True, check_cmd_exit=False):
+        """
+        Get all raised errors (advice: read the whole docstring first!)
+
+        It's possible to filter errors for specific phase or actor. Currently
+        we can detect several possible types of errors:
+          a) an error reported as a message (ErrorModel) that is printed
+             in the generated report; it's covers situation like unhandled
+             crash of an actor or raised StopActorExecutionError
+          b) a log with the ERROR level; logger().error("...")
+          c) exit code of executed sub-shell command (via the run() function)
+
+        By default the a) and b) errors are snanned. The c) errors could be
+        false-positives as some subcommands are expected to return non-zero
+        exit code (e.g. when author wants to obtain false/true information
+        about something).
+
+        IMPORTANT INFO: Data about errors are stored under various keys!! For:
+          - a)      - see key: "messages_data"
+          - b) & c) - see key: "data"
+
+        Errors are sorted chronologically.
+        """
+        # FIXME: decide before the merge (fix or keep...) and remove the fixme
+        # comment:
+        # - Unify the output (doesn't matter whether error a), b), or c)) e.g.
+        # * via defined class; (no difference in access to data..)
+        # - Keep it as it is (it's not convenient, but....)
+        # ... and it this function/method really good idea at all?
+
+
+        errors = self.get_messages(msg_type="ErrorModel", phase=phase, actor=actor)
+
+        if check_logs:
+            for log in self.get_logs(phase=phase, actor=actor, log_level=LogLevels.ERROR):
+                errors.append(log)
+
+        if check_cmd_exit:
+            for cmd_res in self._get_cmd_results(phase=phase, actor=actor, failed_only=True):
+                errors.append(cmd_res)
+
+        # sorting via id is chronologic and safer than string "stamp"
+        return sorted(errors, key=lambda x: x["id"])
+
+    def get_reports(self):
+        """
+        Get all report messages.
+        """
+        return self.get_messages(msg_type="Report")
+
+
+class LeappDataPrinter(LeappDatabase):
+    """
+    Print various leapp data in suitable format for reading.
+
+    Just extend the LeappDatabase class with readable printers.
+    It can be used to simplify additional implementation
+    of the "main-subcommand" functions.
+    """
+
+    FULL_SEP_CHAR = "#"
+    SIMPLE_SEP_CHAR = "-"
+
+    def __init__(self, db_file='leapp.db', context=None):
+        super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
+        self._width = 70
+
+    def _print_header(self, header_title):
+        print("{sep}\n{title}\n{sep}".format(
+            sep=self.FULL_SEP_CHAR*self._width,
+            title=header_title.center(self._width)
+        ))
+
+    def _print_separator(self, full=False, msg=""):
+        sep = self.FULL_SEP_CHAR if full else self.SIMPLE_SEP_CHAR
+        if msg:
+            msg = " {} ".format(msg)
+        print(msg.center(self._width, sep))
+
+    def _print_tail(self):
+        self._print_separator(full=True)
+
+    @staticmethod
+    def _fmt_msg_data(data, recursive=False, stack=0):
+        try:
+            json_data = json.loads(data)
+        except JSONDecodeError:
+            # ignore these errors; not everything is json. just return
+            # the input argument
+            return data
+        except TypeError:
+            if not stack:
+                # on the top level (stack zero) the json is always expected for
+                # message data
+                raise
+            return data
+
+        # NOTE: the dict should be sufficient in most cases. I haven't realized
+        # any message we need to hanle specifically e.g. list values for the
+        # recursive processing. Add in case any example is discovered.
+        if recursive and isinstance(json_data, dict):
+            for key, val in json_data.items():
+                    json_data[key] = LeappDataPrinter._fmt_msg_data(
+                        val, recursive, stack + 1
+                    )
+        if stack > 0:
+            return json_data
+        return json.dumps(json_data, indent=4, sort_keys=True)
+
+
+    @staticmethod
+    def print_message(msg, recursive=False):
+        for i in ("stamp", "actor", "phase", "type"):
+            print("{}: {}".format(i.capitalize(), msg[i]))
+        data = LeappDataPrinter._fmt_msg_data(msg["message_data"], recursive=recursive)
+        print("Message_data:\n{}".format(data))
+
+    def print_messages(self, actor=None, phase=None, msg_type=None, recursive=False):
+        """
+        TODO:
+        """
+        msgs = self.get_messages(actor=actor, phase=phase, msg_type=msg_type)
+        self._print_header("PRODUCED MESSAGES")
+        try:
+            LeappDataPrinter.print_message(msgs.pop(), recursive)
+            for msg in msgs:
+                self._print_separator()
+                LeappDataPrinter.print_message(msg, recursive)
+        except IndexError:
+            print()
+        self._print_tail()
+
+    def print_actor(self, actor_name, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+        """
+        Print information about the specified actor.
+
+        It's possible to set the level of logs that should be printed as some
+        actors could provide big amount of logs that could reduce readability
+        of the output.
+
+        Printed logs usually contains metadata. It's possible to hide metadata
+        and print the pure data only (like printed in terminal during the leapp
+        execution).
+        """
+        def get_metadata(actor_name):
+            # this could be possibly later replace by function like
+            # self.get_actor(actor_name)
+            # of course, with additional data like produced msgs, ....
+            actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+            for log in self._filter_data(event="log-message"):
+                match = actors_regexp.search(log["data"])
+                if match and match.group(1) == actor_name:
+                    return {
+                        "phase": log["phase"],
+                        "stamp": log["stamp"],
+                    }
+            return {}
+
+        msgs = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+        actor = get_metadata(actor_name)
+        print("Actor: {}".format(actor_name))
+        print("Executed: {}".format(actor.get("stamp", None) is not None))
+        print("Phase: {}".format(actor.get("phase","")))
+        print("Started: {}".format(actor.get("stamp","")))
+        print("Produced messages:")
+        if msgs:
+            for msg in msgs:
+                print("    - {}".format(msg))
+        else:
+            print("    ----")
+
+        print("Executed shell commands:")
+        cmd_regexp = re.compile(r"External command has started: (.+\])\",")
+        cmds = []
+        for log in self.get_logs(actor=actor_name):
+            match = cmd_regexp.search(log["data"])
+            if match:
+                cmds.append(match.group(1))
+        if cmds:
+            for cmd in cmds:
+                print("    - {}".format(cmd))
+        else:
+            print("    ----")
+
+        print("Logs:")
+        log = None
+        for log in self.get_logs(actor=actor_name, log_level=log_level):
+            if terminal_like_logs:
+                print("    {}".format(json.loads(log["data"])["message"]))
+            else:
+                print("--- {}".format(log["data"]))
+        if not log:
+            print("    ----")
+
+    def print_actors(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+        """
+        Print various information about actors
+        """
+        # FIXME: currently prints info just about executed actors, add
+        # possibility of filtering, and detection of all actors!!
+        actors = self.get_executed_actors()
+        self._print_header("EXECUTED ACTORS")
+        try:
+            # pop actors in the execution order
+            self.print_actor(actors.pop(0), log_level=log_level, terminal_like_logs=terminal_like_logs)
+            for actor_name in actors:
+                self._print_separator()
+                self.print_actor(actor_name, log_level=log_level, terminal_like_logs=terminal_like_logs)
+        except IndexError:
+            print()
+        self._print_tail()
+
+    def print_execution_info(self, execution):
+        """Print info about defined execution."""
+        # TODO: add info about used envars as well from the IPUConfig msg
+        # - to make it more robust, check whether such message exists, if not,
+        # do not crash, just skip it or report the missing data...
+        raise NotImplementedError()
+
+    def print_terminal_output(self):
+        """
+        Reconstruct the output on terminal.
+
+        The output doesn't have to be completely same, as order can be
+        sometimes changed - in the meaning that stderr and stdout of procesed
+        commands is printed in runtime and can be mixed, but in db they are
+        separated. There could be additional discrepancies - like missing
+        errors printed out of leapp completely.
+        """
+        # NOTE: Q: enable switch with/without debug, only stderr, only stdout,
+        # or even output related just to specific phase or actor?
+        # - does it make sense to provide anything from that?....
+        # - keep it stupid now, until all usecases are written and cmdline
+        #   designed
+        raise NotImplementedError()
+
+# #################################
+# Stuff related to the tool and CLI
+# #################################
+
+class SubCommandBaseClass():
+    """
+    This is base class for CLI subcommands of Leapp Inspector
+
+    To add new subcommand for the Leapp Inspector tool, just derive new class
+    and implement methods below. For registration of the subcommand use an
+    instance of LeappInspectorCLI class and call the add_subcommand method
+    giving the derived class as an input parameter. e.g.:
+        li_cli = LeappInspectorCLI()
+        li_cli.add_subcommand(<SubCommandClass>)
+    """
+
+    name = None
+    """
+    Set the subcommand name in the derived subclasses.
+
+    The string is the one expected to use on the commandline to execute
+    specific subcommand. E.g. if name = "mycmd", then on  cmdline:
+        leapp-inspector mycmd
+    does the thing.
+    """
+
+    help_short_str = None
+    """
+    The short help message message summarizing the sub-command purpose.
+
+    It's the message you see next to your subcommand when call
+        leapp-inspector --help
+    """
+
+    def __init__(self, leapp_inspector_cli):
+        if type(self) is SubCommandBaseClass:
+            raise Exception("The base class cannot be instantiated directly.")
+        if not isinstance(leapp_inspector_cli, LeappInspectorCLI):
+            raise ValueError("leapp_inspector_cli must be instance of LeappInspectorCLI")
+        self.li_cli = leapp_inspector_cli
+        self._register_cmd()
+
+    @property
+    def cmd_name(self):
+        if not self.name or not isinstance(self.name, str):
+            raise ValueError(
+                "The <class>.name string must be specified in derived classes."
+                " E.g. 'messages'."
+            )
+        return self.name
+
+    @property
+    def help_short(self):
+        if not self.help_short_str or not isinstance(self.help_short_str, str):
+            raise ValueError(
+                "The <class>.help_short_str string must be specified in"
+                " derived classes."
+            )
+        return self.help_short_str
+
+
+    def set_arguments(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
+    def process(self):
+        raise NotImplementedError("Must be implemented in derived class.")
+
+    def _register_cmd(self):
+        self.subparser = self.li_cli.add_parser(
+            self.cmd_name,
+            help=self.help_short,
+        )
+        self.set_arguments()
+
+    @property
+    def LeappDatabase(self):
+        return self.li_cli.LeappDatabase
+
+    @property
+    def LeappDataPrinter(self):
+        return self.li_cli.LeappDataPrinter
+
+    @property
+    def cmdline(self):
+        return self.li_cli.cmdline
+
+
+class LeappInspectorCLI:
+    """
+    The main class of Leapp Inspector for CLI
+
+    Adjustable parsing of the CLI based on registered sub-commands.
+    """
+
+    def __init__(self):
+        # TODO: replace _cmd_func_map by parser.set_default(...)
+        self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
+        self._cmd_func_map = {}
+        self._add_top_lvl_options()
+        self._subparsers = self._parser.add_subparsers(
+            title="Subcommands",
+            help="subcommands help",
+            dest="subcmd",
+        )
+        self.cmdline = None
+
+        # internally stored instances of LeappDatabase and LeappDataPrinter
+        self._ld = None
+        self._ldp = None
+
+    def print_help(self):
+        self._parser.print_help()
+
+    def add_parser(self, name, **kwargs):
+        """
+        Return subparser that can be used and adjusted by subcommands.
+        """
+        return self._subparsers.add_parser(name, **kwargs)
+
+
+    def add_subcommand(self, subcmd_class):
+        """
+        Add/register new subcommand for the Leapp Inspector tool
+
+        Expected class derived from SubCommandBaseClass.
+        """
+        subcmd = subcmd_class(self)
+        self._cmd_func_map[subcmd.cmd_name] = subcmd.process
+
+    def parse(self):
+        """
+        Parse cmdline input
+        """
+        self.cmdline =  self._parser.parse_args()
+
+    def process(self):
+        """
+        Execute the process method of the chosen subcommand.
+
+        It's the process method of the subcommand registered by add_subcommand()
+        """
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self.cmdline.subcmd:
+            self._cmd_func_map[self.cmdline.subcmd]()
+        else:
+            # no subcommand specified -> print help
+            self._cmd_func_map["help"]()
+
+    @property
+    def LeappDatabase(self):
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self._ld:
+            return self._ld
+        self._ld = LeappDatabase(
+            db_file=self.cmdline.db_file,
+            context=self.cmdline.context,
+        )
+        return self._ld
+
+    @property
+    def LeappDataPrinter(self):
+        if not self.cmdline:
+            raise ValueError("Missing parsed CLI. Run self.parse() first.")
+        if self._ldp:
+            return self._ldp
+        self._ldp = LeappDataPrinter(
+            db_file=self.cmdline.db_file,
+            context=self.cmdline.context,
+        )
+        return self._ldp
+
+    def _add_top_lvl_options(self):
+        self._parser.add_argument(
+            "--db", metavar="FILE", dest="db_file", default="leapp.db",
+            help=(
+                "Specify the path to the leapp.db file. By default"
+                " looks for leapp.db file in the current (script) directory.")
+        )
+        self._parser.add_argument(
+            "--context", metavar="CONTEXT", dest="context", default=None,
+            help=(
+                "Specify the CONTEXT (execution of leapp) that should be"
+                " loaded and processed. By default the last leapp session"
+                " is processed when not specified. So see possible contexts"
+                " you can use e.g. `leapp-inspector contexts` cmd. Example"
+                " of context: '2548112d-3d20-49ca-908f-2b4b6b3bdb84'")
+        )
+
+
+# ###########
+# Subcommands
+# ###########
+
+
+class HelpCLI(SubCommandBaseClass):
+
+    name = "help"
+    help_short_str = "Print this help"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        self.li_cli.print_help()
+
+
+class MessagesCLI(SubCommandBaseClass):
+    """
+    The message subcommand for actions with messages
+    """
+
+    name = "messages"
+    help_short_str = "Print produced messages"
+
+    def set_arguments(self):
+        self.subparser.add_argument("--list", dest="msgs", action="store_true",
+            help="List types of all produced messages.")
+        self.subparser.add_argument("--actor", dest="actor", default=None,
+            help="Print only messages produced by the actor.")
+        self.subparser.add_argument("--type", dest="msg_type", default=None,
+            help="Print only messages ot the specified type.")
+        self.subparser.add_argument("--phase", dest="phase", default=None,
+            help="Print only messages produced during the specified phase.")
+        self.subparser.add_argument("--recursive-expand", dest="recursive", action="store_true",
+            help=(
+                "Expand all JSON data recursively. IOW, any json encoded"
+                 " as a string is decoded. Try it with the Report type to see"
+                 " the difference."
+        ))
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        if cmdline.msgs:
+            for actor in sorted(self.LeappDatabase.get_models()):
+                print("    {}".format(actor))
+            return
+        self.LeappDataPrinter.print_messages(
+            actor=cmdline.actor,
+            phase=cmdline.phase,
+            msg_type=cmdline.msg_type,
+            recursive=cmdline.recursive,
+        )
+
+
+class ActorsCLI(SubCommandBaseClass):
+    """
+    The actor subcommand for actions with actors
+    """
+
+    name = "actors"
+    help_short_str = "Print various information about actors"
+
+    _log_level_map = {
+        "ERROR": LogLevels.ERROR,
+        "WARNING": LogLevels.WARNING,
+        "INFO": LogLevels.INFO,
+        "DEBUG": LogLevels.DEBUG
+    }
+
+    def set_arguments(self):
+        group = self.subparser.add_argument_group('List options').add_mutually_exclusive_group()
+        # TODO: currently we can obtain only dirnames of actors, not names of actors,
+        # - which means we cannot effectively use this information right now.
+        # - propose change in leapp to be able to get name of every discovered actor
+        # group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
+        #    help="List all discovered actors")
+        group.add_argument("--list-executed", dest="list", action="store_const", const=ActorSelector.EXECUTED,
+            help="List all executed actors")
+        group.add_argument("--list-producers", dest="list", action="store_const", const=ActorSelector.PRODUCER,
+            help="List all actors that produced any messages")
+        group.add_argument("--actor", dest="actor", default=None,
+            help="Print data related just to the specified actor.")
+        self.subparser.add_argument("--log-level", dest="log_level", default="DEBUG",
+            choices=self._log_level_map.keys(),
+            help=(
+                "Print logs of the given level and lower. The DEBUG level"
+                " is the highest one and set by default. The ERROR level"
+                " is the lowest."
+            ))
+        self.subparser.add_argument("--terminal-like", dest="terminal_like", action="store_true",
+            help=(
+                "Logs are usually stored with additional metadata. Using this"
+                " option, logs are printed like they are printed in terminal"
+                " when leapp is executed - just indentation is added, for"
+                " better readability, on the beginning of every log."
+            ))
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        actors_dict = {
+            ActorSelector.ANY: self.LeappDataPrinter.get_actors,
+            ActorSelector.EXECUTED: self.LeappDataPrinter.get_executed_actors,
+            ActorSelector.PRODUCER: self.LeappDataPrinter.get_productive_actors,
+        }
+
+        if cmdline.list:
+            for actor in sorted(actors_dict[cmdline.list]()):
+                print("    {}".format(actor))
+            return
+        if cmdline.actor:
+            self.LeappDataPrinter.print_actor(
+                cmdline.actor,
+                log_level=self._log_level_map[cmdline.log_level],
+                terminal_like_logs=cmdline.terminal_like
+            )
+            return
+        self.LeappDataPrinter.print_actors(
+            log_level=self._log_level_map[cmdline.log_level],
+            terminal_like_logs=cmdline.terminal_like
+        )
+
+
+class ExecutionsCLI(SubCommandBaseClass):
+
+    name = "executions"
+    help_short_str = "Print discovered executions of leapp on the machine"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+        line_fmt = "{:36} | {:27}"
+        self.LeappDataPrinter._print_header("Executions of Leapp")
+        print(line_fmt.format("Execution", "Timestamp"))
+        print(line_fmt.format("-"*36, "-"*27))
+        for row in self.LeappDataPrinter.get_executions():
+            print(line_fmt.format(row["context"], row["stamp"]))
+
+
+class InteractiveCLI(SubCommandBaseClass):
+    """
+    The interactive subcommand to switch into the interactive Python mode.
+    """
+
+    name = "interactive"
+    help_short_str = "Switch to interactive Python mode for manual experimenting"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        self.LeappDataPrinter._print_header("Switching to interactive mode")
+        print(
+            "This functionality is supposed to be used just by people\n"
+            "that are familiar with the leapp-inspector source code."
+        )
+        print(
+            "Hint:\n"
+            "    Execute self.LeappDatabase or self.LeapDataPrint to get\n"
+            "    already initialized objects."
+        )
+        self.LeappDataPrinter._print_tail()
+        import code
+        _all_defs = globals().copy()
+        _all_defs.update(locals())
+        code.interact(local=_all_defs)
+
+
+class InspectionCLI(SubCommandBaseClass):
+    """
+    The inspection subcommand for fast (high-level) inspection of the leapp
+    execution.
+    """
+
+    name = "inspection"
+    help_short_str = "Print high lvl report about run of leapp [EXPERIMENTAL]"
+
+    def set_arguments(self):
+        self.subparser.add_argument("--paranoid", dest="is_paranoid", action="store_true",
+            help=(
+                "Set inspection to the paranoid mode. Print possible errors"
+                " when any sub command executed by actor return non-zero exit"
+                " code. This can produce a lot of 'false positive' messages"
+                " as many such failed subcommands are expected to be valid"
+                " output. E.g. when detecting whether something is set, is"
+                " expected the subcommand could return non-zero exit code."
+                " That's why the mode is called paranoid. But sometimes could"
+                " point on hidden issue.")
+        )
+
+    def process(self):
+        ldp = self.LeappDataPrinter
+        ldp._print_header("Inspection - summary data")
+        print("Number of leapp executions: {}".format(len(ldp.get_executions())))
+        print("Used Workflow: {}".format("(tbd)"))
+        print("Leapp execution command: {}".format("(tbd)"))
+        print("Used unsupported options? (tbd)")
+        print("Used Leapp envars: (tbd)")
+        print("Last executed phase: {}".format(ldp.get_last_executed_phase()))
+        print("Last executed actor: {}".format(ldp.get_last_executed_actor()))
+        print("Has been reported an error? {}".format(self._error_exists()))
+        print("Has been reported an inhibitor? {}".format(self._inhibitor_exist()))
+        ldp._print_header("Inspection - execution")
+        for is_phase, phase_type, name in self._iter_phases_and_actors():
+            if is_phase:
+                print("==> {}  ({})".format(name, phase_type))
+            else:
+                print("====> {}".format(name))
+            errors = ldp.get_errors(actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
+            if not errors:
+                continue
+            ldp._print_separator(msg="(Possible) Errors")
+            for err in errors:
+                if err["data"]:
+                    print("--- {}".format(err["data"]))
+                else:
+                    ldp._print_separator()
+                    # TODO: work on pretty printer of errors
+                    LeappDataPrinter.print_message(err, True)
+            ldp._print_separator()
+
+
+    def _error_exists(self):
+        # Ok, currently this returns just errors that have been reported (ErrorModel)
+        # IOW, only fatal errors. Not errors logged used the logger.
+        if self.LeappDatabase.get_errors(check_logs=False, check_cmd_exit=False):
+            return True
+        return False
+
+    def _inhibitor_exist(self):
+        for msg in self.LeappDatabase.get_messages():
+            data = json.loads(msg["message_data"])
+            # FIXME: flags are going to be removed and replace
+            # by groups
+            # FIXME: when the failure is used?
+            # TODO: verify it works on leapp.db with inhibitor
+            if "inhibitor" in data.get("flags", []):
+                return True
+        return False
+
+    def _iter_phases_and_actors(self):
+        actors_regexp = re.compile(r"Executing actor ([^\s]+)")
+        phase_regexp = re.compile(r"Starting stage (Before|Main|After)")
+        for log in self.LeappDatabase.get_logs():
+            match = phase_regexp.search(log["data"])
+            if match:
+                yield True, match.group(1) ,log["phase"]
+                continue
+            match = actors_regexp.search(log["data"])
+            if match:
+                yield False, None, match.group(1)
+
+
+# ###################################
+# Some stuff related to main function
+# ###################################
+
+def set_default_subcommands(cli):
+    cli.add_subcommand(HelpCLI)
+    cli.add_subcommand(ActorsCLI)
+    cli.add_subcommand(MessagesCLI)
+    cli.add_subcommand(ExecutionsCLI)
+    cli.add_subcommand(InteractiveCLI)
+    cli.add_subcommand(InspectionCLI)
+
+if __name__ == '__main__':
+    cli = LeappInspectorCLI()
+    set_default_subcommands(cli)
+    cli.parse()
+    cli.process()
