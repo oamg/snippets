@@ -14,6 +14,12 @@ except ImportError:
 from pprint import pprint as pp
 
 """
+============= DISCLAIMER ==================
+The code is not stabilized yet! Read: it's under heavy development!
+You should expect that output format, CLI, and classes/functions in the script
+can be significantly changed without notification.
+===========================================
+
 The current code is written as library and tool in one file, as it's expected
 it will be copied oftenly; so for now, just one file to make copying simple.
 Installation is not needed. Just copy the script wherever you want and use it.
