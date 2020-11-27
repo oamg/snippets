@@ -8,6 +8,12 @@ of the Leapp execution based on data in the leapp db. E.g. what actors have
 been executed, what meesages have been produced, what happened during
 the execution of leapp, ...
 
+## DISCLAIMER
+
+The code is not stabilized yet! It's under heavy development!
+You should expect that output format, CLI, and classes/functions in the script
+can be significantly changed without notification and without sorry.
+
 ## Requirements
 The script is Python2 & Python3 compatible. By default, when execute the tool,
 Python3 is required. In case you want to use the tool with Python2, invoke it
