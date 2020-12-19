@@ -11,6 +11,12 @@ try:
 except ImportError:
     JSONDecodeError = ValueError  # for Python2
 
+try:
+    from configparser import ConfigParser
+except ImportError:
+    # for Python2 (we do not want to make dependency on the six library)
+    from ConfigParser import SafeConfigParser as ConfigParser
+
 from pprint import pprint as pp
 
 """
@@ -666,6 +672,9 @@ class LeappInspectorCLI:
     Adjustable parsing of the CLI based on registered sub-commands.
     """
 
+    DEFAULT_DB_PATHS= ["leapp.db", "/var/lib/leapp/leapp.db"]
+    LEAPP_CONFIG_FILE = "/etc/leapp/leapp.conf"
+
     def __init__(self):
         # TODO: replace _cmd_func_map by parser.set_default(...)
         self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
@@ -747,10 +756,12 @@ class LeappInspectorCLI:
 
     def _add_top_lvl_options(self):
         self._parser.add_argument(
-            "--db", metavar="FILE", dest="db_file", default="leapp.db",
+            "--db", metavar="FILE", dest="db_file", default=self._default_path(),
             help=(
                 "Specify the path to the leapp.db file. By default"
-                " looks for leapp.db file in the current (script) directory.")
+                " looks for leapp.db file in the current (PWD) directory,"
+                " /var/lib/leapp/leapp.db, and path specified by the leapp"
+                " configuration file if present (in this order).")
         )
         self._parser.add_argument(
             "--context", metavar="CONTEXT", dest="context", default=None,
@@ -762,6 +773,39 @@ class LeappInspectorCLI:
                 " of context: '2548112d-3d20-49ca-908f-2b4b6b3bdb84'")
         )
 
+    def _default_path(self):
+        """
+        Return the first existing leapp db file from DEFAULT_DB_PATHS or
+        "leapp.db".
+
+        People have usually two types of expectations:
+          - work with the leapp.db file in the PWD
+          - work with the leapp.db file on the default path
+            (typically /var/lib/leapp/leapp.db)
+
+        To cover both usecases, let's provide the list of paths which should
+        be checked by default and the first existing path is returned.
+
+        Be aware that the path of the leapp.db file created by leapp could
+        be changed inside the leapp configuration file. The function reflects
+        it, but after the default paths are checked! This is valid only in
+        cases Leapp Inspector is run on a machine with installed Leapp.
+
+        In case leapp.db file is not found on any specified default path,
+        return just "leapp.db".
+        """
+        for db_file in self.DEFAULT_DB_PATHS:
+            if os.path.exists(db_file):
+                return db_file
+
+        if os.path.exists(self.LEAPP_CONFIG_FILE):
+            cp = ConfigParser()
+            cp.read(self.LEAPP_CONFIG_FILE)
+            db_file = cp.get(section="database", option="path")
+            if os.path.exists(db_file):
+                return db_file
+
+        return "leapp.db"
 
 # ###########
 # Subcommands
