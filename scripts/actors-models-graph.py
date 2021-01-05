@@ -125,8 +125,8 @@ if __name__ == '__main__':
     # Actor.tags - cluster
     # Actor.dialogs - changes shape of the vertex if actor has dialogs
     actors = [Actor(name=actor.class_name,
-                    consumes=tuple(c.serialize()['name'] for c in actor.consumes),
-                    produces=tuple(p.serialize()['name'] for p in actor.produces),
+                    consumes=tuple(c.serialize()['class_name'] for c in actor.consumes),
+                    produces=tuple(p.serialize()['class_name'] for p in actor.produces),
                     tags=[elem for elem in tuple(t.serialize()['name'] for t in actor.tags)
                           if elem != 'IPUWorkflowTag'],
                     dialogs=[d.scope for d in getattr(actor, "dialogs", [])]
