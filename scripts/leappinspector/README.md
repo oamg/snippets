@@ -41,13 +41,31 @@ is now Python2 & Python3 compatible.
 For convenient use, the bash-completion file is located under the bash-completion
 directory. To install it, just copy it under your bash-completion. If you want
 to specify bash-completion on the user level, do somethin like that:
-1. create ~/.bash-completion.d directory
+1. create ~/.bash\_completion.d directory
 1. copy the script inside
 1. create user's ~/.bash\_completion configuration script:
 ```
 for bcfile in $(find ~/.bash_completion.d/ -type f -exec grep -Iq . {} \; -print) ; do
   . $bcfile
 done
+```
+
+or just copy&paste this script:
+```
+leapp_inspector_bcomp_url=https://raw.githubusercontent.com/oamg/snippets/master/scripts/leappinspector/completion/leapp-inspector.bash
+mkdir ~/.bash_completion.d
+curl -kL $leapp_inspector_bcomp_url > ~/.bash_completion.d/leapp-inspector.bash
+cat >> ~/.bash_completion <<EOF
+for bcfile in \$(find ~/.bash_completion.d/ -type f -exec grep -Iq . {} \; -print) ; do
+  . \$bcfile
+done
+EOF
+```
+
+If you do everything correct, the bash-completion will be loaded the next time
+you login or when you manually execute:
+```
+source ~/.bash_completion
 ```
 
 ## How to use the tool
