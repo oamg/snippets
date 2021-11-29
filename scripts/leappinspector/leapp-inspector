@@ -967,7 +967,7 @@ class InteractiveCLI(SubCommandBaseClass):
         )
         print(
             "Hint:\n"
-            "    Execute self.LeappDatabase or self.LeapDataPrint to get\n"
+            "    Execute self.LeappDatabase or self.LeapDataPrinter to get\n"
             "    already initialized objects."
         )
         self.LeappDataPrinter._print_tail()
@@ -1039,8 +1039,8 @@ class InspectionCLI(SubCommandBaseClass):
         return False
 
     def _inhibitor_exist(self):
-        for msg in self.LeappDatabase.get_messages():
-            data = json.loads(msg["message_data"])
+        for msg in self.LeappDatabase.get_messages(msg_type="Report"):
+            data = json.loads(json.loads(msg["message_data"])["report"])
             # FIXME: flags are going to be removed and replace
             # by groups
             # FIXME: when the failure is used?
