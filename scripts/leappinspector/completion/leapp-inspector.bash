@@ -26,9 +26,12 @@ _get_dbfile() {
        fi
     done
 
-    [[ -e "leapp.db" ]] || return 1
-    echo "leapp.db"
-    return 0
+    # try to find the defaults if present..
+    [[ -e "leapp.db" ]] && echo "leapp.db" && return 0
+    [[ -e "/var/lib/leapp/leapp.db" ]] && echo "/var/lib/leapp/leapp.db" && return 0
+
+    # no leapp.db file discovered
+    return 1
 }
 
 _get_context() {
