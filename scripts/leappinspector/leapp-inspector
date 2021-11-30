@@ -967,7 +967,7 @@ class InteractiveCLI(SubCommandBaseClass):
         )
         print(
             "Hint:\n"
-            "    Execute self.LeappDatabase or self.LeapDataPrinter to get\n"
+            "    Execute self.LeappDatabase or self.LeappDataPrinter to get\n"
             "    already initialized objects."
         )
         self.LeappDataPrinter._print_tail()
