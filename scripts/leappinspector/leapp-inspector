@@ -1,9 +1,11 @@
 #!/usr/bin/python3
 
 import argparse
+import errno
 import json
 import os
 import re
+import socket
 import sqlite3
 import sys
 try:
@@ -1078,7 +1080,13 @@ def set_default_subcommands(cli):
     cli.add_subcommand(InspectionCLI)
 
 if __name__ == '__main__':
-    cli = LeappInspectorCLI()
-    set_default_subcommands(cli)
-    cli.parse()
-    cli.process()
+    try:
+        cli = LeappInspectorCLI()
+        set_default_subcommands(cli)
+        cli.parse()
+        cli.process()
+    except socket.error as e:
+        if e.errno != errno.EPIPE:
+            raise
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
