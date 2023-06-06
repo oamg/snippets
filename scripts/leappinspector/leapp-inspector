@@ -514,7 +514,10 @@ class LeappDataPrinter(LeappDatabase):
             print("    ----")
 
         print("Executed shell commands:")
-        cmd_regexp = re.compile(r"External command has started: (.+\])\",")
+        # NOTE(pstodulk): That regular is terrible, I know
+        # be aware that order of json fields in the log is different on
+        # py2 and py3
+        cmd_regexp = re.compile(r"External command has started: (.+\])\"[,}]")
         cmds = []
         for log in self.get_logs(actor=actor_name):
             match = cmd_regexp.search(log["data"])
