@@ -38,6 +38,7 @@ It's expected that people implement additional extensions / subcommands which
 serve well for them.
 """
 
+
 class LeappDatabaseEmpty(Exception):
     pass
 
@@ -74,6 +75,10 @@ def print_rows(rows):
         print_row(row)
 
 
+def _id(x):
+    return x
+
+
 class Database(object):
     """
     Class to get various data about SQLite db in convenient way.
@@ -86,7 +91,7 @@ class Database(object):
             raise EnvironmentError(
                 "The {} file doesn't exist. Specify the correct path to the"
                 " leapp database file.".format(db_file)
-        )
+            )
 
         self._db_file = db_file
         self._debug = debug
@@ -119,7 +124,8 @@ class Database(object):
         """
         Get list of tables.
         """
-        cursor = self.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        cursor = self.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")
         return [row["name"] for row in cursor.fetchall()]
 
     def get_table_info(self, table):
@@ -130,8 +136,8 @@ class Database(object):
         to be able to get info using `.schema` cmd.
         """
         cursor = self.execute(
-                    "SELECT * from sqlite_master WHERE type='table' AND name='{}'"
-                    .format(table))
+            "SELECT * from sqlite_master WHERE type='table' AND name='{}'"
+            .format(table))
         return cursor.fetchall()
 
 
@@ -241,12 +247,31 @@ class LeappDatabase(Database):
         """
         raise NotImplementedError()
 
+    def get_entity_metadata(self, kind, name):
+        """
+        Get information about specific actor including all metadata.
+
+        # TODO: kind is one of actor, workflow ....
+        """
+        cmd = ("SELECT metadata.metadata FROM entity"
+               " LEFT JOIN metadata ON metadata_hash = metadata.hash"
+               " WHERE context = '{context}' AND kind = '{kind}' AND name = '{name}'"
+               .format(context=self._context, kind=kind, name=name))
+        result = self.execute(cmd).fetchone()
+
+        return json.loads(result["metadata"])
+
     def get_actors(self):
         """
         Return a set of discovered actors
         """
-        # for row in self.get_logs(phase=""):
-        raise NotImplementedError("Requires change in the framework first")
+
+        cmd = ("SELECT name FROM entity"
+               " WHERE kind = 'actor' AND context = '{context}'"
+               .format(context=self._context))
+        results = self.execute(cmd).fetchall()
+
+        return [row["name"] for row in results]
 
     def get_productive_actors(self):
         """
@@ -372,8 +397,8 @@ class LeappDatabase(Database):
         # - Keep it as it is (it's not convenient, but....)
         # ... and it this function/method really good idea at all?
 
-
-        errors = self.get_messages(msg_type="ErrorModel", phase=phase, actor=actor)
+        errors = self.get_messages(
+            msg_type="ErrorModel", phase=phase, actor=actor)
 
         if check_logs:
             for log in self.get_logs(phase=phase, actor=actor, log_level=LogLevels.ERROR):
@@ -406,7 +431,8 @@ class LeappDataPrinter(LeappDatabase):
     SIMPLE_SEP_CHAR = "-"
 
     def __init__(self, db_file='leapp.db', context=None):
-        super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
+        super(LeappDataPrinter, self).__init__(
+            db_file=db_file, context=context)
         self._width = 70
 
     def _print_header(self, header_title):
@@ -444,19 +470,30 @@ class LeappDataPrinter(LeappDatabase):
         # recursive processing. Add in case any example is discovered.
         if recursive and isinstance(json_data, dict):
             for key, val in json_data.items():
-                    json_data[key] = LeappDataPrinter._fmt_msg_data(
-                        val, recursive, stack + 1
-                    )
+                json_data[key] = LeappDataPrinter._fmt_msg_data(
+                    val, recursive, stack + 1
+                )
         if stack > 0:
             return json_data
         return json.dumps(json_data, indent=4, sort_keys=True)
 
+    @staticmethod
+    def _fmt_as_bullet_points(t):
+        lines = ['']
+        for entry in t:
+            lines.append("    - {}".format(entry))
+
+        if not t:
+            lines.append("    ----")
+
+        return '\n'.join(lines)
 
     @staticmethod
     def print_message(msg, recursive=False):
         for i in ("stamp", "actor", "phase", "type"):
             print("{}: {}".format(i.capitalize(), msg[i]))
-        data = LeappDataPrinter._fmt_msg_data(msg["message_data"], recursive=recursive)
+        data = LeappDataPrinter._fmt_msg_data(
+            msg["message_data"], recursive=recursive)
         print("Message_data:\n{}".format(data))
 
     def print_messages(self, actor=None, phase=None, msg_type=None, recursive=False):
@@ -490,28 +527,36 @@ class LeappDataPrinter(LeappDatabase):
             # this could be possibly later replace by function like
             # self.get_actor(actor_name)
             # of course, with additional data like produced msgs, ....
+            metadata = self.get_entity_metadata('actor', actor_name)
+
             actors_regexp = re.compile(r"Executing actor ([^\s]+)")
             for log in self._filter_data(event="log-message"):
                 match = actors_regexp.search(log["data"])
                 if match and match.group(1) == actor_name:
-                    return {
-                        "phase": log["phase"],
-                        "stamp": log["stamp"],
-                    }
-            return {}
+                    metadata["stamp"] = log["stamp"]
+                    break
 
-        msgs = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+            return metadata
+
         actor = get_metadata(actor_name)
-        print("Actor: {}".format(actor_name))
-        print("Executed: {}".format(actor.get("stamp", None) is not None))
-        print("Phase: {}".format(actor.get("phase","")))
-        print("Started: {}".format(actor.get("stamp","")))
-        print("Produced messages:")
-        if msgs:
-            for msg in msgs:
-                print("    - {}".format(msg))
-        else:
-            print("    ----")
+        actor["msgs"] = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+
+        fields = [
+            # (field to print, field, default value, fn)
+            ("Actor", "name", "", _id),
+            ("Class", "class_name", "", _id),
+            ("Path", "path", "", _id),
+            ("Executed", "stamp", None, lambda _: _ is not None),
+            ("Started", "stamp", "", _id),
+            ("Phase", "phase", "", _id),
+            ("Tags", "tags", (), LeappDataPrinter._fmt_as_bullet_points),
+            ("Consumes", "consumes", (), LeappDataPrinter._fmt_as_bullet_points),
+            ("Produces", "produces", (), LeappDataPrinter._fmt_as_bullet_points),
+            ("Produced during execution", "msgs", (), LeappDataPrinter._fmt_as_bullet_points),
+            ("Description", "description", "", _id),
+        ]
+        for print_field, field, default, fn in fields:
+            print("{}: {}".format(print_field, fn(actor.get(field, default))))
 
         print("Executed shell commands:")
         # NOTE(pstodulk): That regular is terrible, I know
@@ -545,14 +590,17 @@ class LeappDataPrinter(LeappDatabase):
         """
         # FIXME: currently prints info just about executed actors, add
         # possibility of filtering, and detection of all actors!!
-        actors = self.get_executed_actors()
-        self._print_header("EXECUTED ACTORS")
+        actors = self.get_actors()
+        self._print_header("DISCOVERED ACTORS")
         try:
+            # TODO: really execution order?
             # pop actors in the execution order
-            self.print_actor(actors.pop(0), log_level=log_level, terminal_like_logs=terminal_like_logs)
+            self.print_actor(actors.pop(0), log_level=log_level,
+                             terminal_like_logs=terminal_like_logs)
             for actor_name in actors:
                 self._print_separator()
-                self.print_actor(actor_name, log_level=log_level, terminal_like_logs=terminal_like_logs)
+                self.print_actor(actor_name, log_level=log_level,
+                                 terminal_like_logs=terminal_like_logs)
         except IndexError:
             print()
         self._print_tail()
@@ -584,6 +632,7 @@ class LeappDataPrinter(LeappDatabase):
 # #################################
 # Stuff related to the tool and CLI
 # #################################
+
 
 class SubCommandBaseClass():
     """
@@ -619,7 +668,8 @@ class SubCommandBaseClass():
         if type(self) is SubCommandBaseClass:
             raise Exception("The base class cannot be instantiated directly.")
         if not isinstance(leapp_inspector_cli, LeappInspectorCLI):
-            raise ValueError("leapp_inspector_cli must be instance of LeappInspectorCLI")
+            raise ValueError(
+                "leapp_inspector_cli must be instance of LeappInspectorCLI")
         self.li_cli = leapp_inspector_cli
         self._register_cmd()
 
@@ -640,7 +690,6 @@ class SubCommandBaseClass():
                 " derived classes."
             )
         return self.help_short_str
-
 
     def set_arguments(self):
         raise NotImplementedError("Must be implemented in derived class.")
@@ -675,7 +724,7 @@ class LeappInspectorCLI:
     Adjustable parsing of the CLI based on registered sub-commands.
     """
 
-    DEFAULT_DB_PATHS= ["leapp.db", "/var/lib/leapp/leapp.db"]
+    DEFAULT_DB_PATHS = ["leapp.db", "/var/lib/leapp/leapp.db"]
     LEAPP_CONFIG_FILE = "/etc/leapp/leapp.conf"
 
     def __init__(self):
@@ -703,7 +752,6 @@ class LeappInspectorCLI:
         """
         return self._subparsers.add_parser(name, **kwargs)
 
-
     def add_subcommand(self, subcmd_class):
         """
         Add/register new subcommand for the Leapp Inspector tool
@@ -717,7 +765,7 @@ class LeappInspectorCLI:
         """
         Parse cmdline input
         """
-        self.cmdline =  self._parser.parse_args()
+        self.cmdline = self._parser.parse_args()
 
     def process(self):
         """
@@ -837,19 +885,19 @@ class MessagesCLI(SubCommandBaseClass):
 
     def set_arguments(self):
         self.subparser.add_argument("--list", dest="msgs", action="store_true",
-            help="List types of all produced messages.")
+                                    help="List types of all produced messages.")
         self.subparser.add_argument("--actor", dest="actor", default=None,
-            help="Print only messages produced by the actor.")
+                                    help="Print only messages produced by the actor.")
         self.subparser.add_argument("--type", dest="msg_type", default=None,
-            help="Print only messages ot the specified type.")
+                                    help="Print only messages ot the specified type.")
         self.subparser.add_argument("--phase", dest="phase", default=None,
-            help="Print only messages produced during the specified phase.")
+                                    help="Print only messages produced during the specified phase.")
         self.subparser.add_argument("--recursive-expand", dest="recursive", action="store_true",
-            help=(
-                "Expand all JSON data recursively. IOW, any json encoded"
-                 " as a string is decoded. Try it with the Report type to see"
-                 " the difference."
-        ))
+                                    help=(
+                                        "Expand all JSON data recursively. IOW, any json encoded"
+                                        " as a string is decoded. Try it with the Report type to see"
+                                        " the difference."
+                                    ))
 
     def process(self):
         cmdline = self.li_cli.cmdline
@@ -881,32 +929,33 @@ class ActorsCLI(SubCommandBaseClass):
     }
 
     def set_arguments(self):
-        group = self.subparser.add_argument_group('List options').add_mutually_exclusive_group()
+        group = self.subparser.add_argument_group(
+            'List options').add_mutually_exclusive_group()
         # TODO: currently we can obtain only dirnames of actors, not names of actors,
         # - which means we cannot effectively use this information right now.
         # - propose change in leapp to be able to get name of every discovered actor
-        # group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
-        #    help="List all discovered actors")
+        group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
+                           help="List all discovered actors")
         group.add_argument("--list-executed", dest="list", action="store_const", const=ActorSelector.EXECUTED,
-            help="List all executed actors")
+                           help="List all executed actors")
         group.add_argument("--list-producers", dest="list", action="store_const", const=ActorSelector.PRODUCER,
-            help="List all actors that produced any messages")
+                           help="List all actors that produced any messages")
         group.add_argument("--actor", dest="actor", default=None,
-            help="Print data related just to the specified actor.")
+                           help="Print data related just to the specified actor.")
         self.subparser.add_argument("--log-level", dest="log_level", default="DEBUG",
-            choices=self._log_level_map.keys(),
-            help=(
-                "Print logs of the given level and lower. The DEBUG level"
-                " is the highest one and set by default. The ERROR level"
-                " is the lowest."
-            ))
+                                    choices=self._log_level_map.keys(),
+                                    help=(
+                                        "Print logs of the given level and lower. The DEBUG level"
+                                        " is the highest one and set by default. The ERROR level"
+                                        " is the lowest."
+                                    ))
         self.subparser.add_argument("--terminal-like", dest="terminal_like", action="store_true",
-            help=(
-                "Logs are usually stored with additional metadata. Using this"
-                " option, logs are printed like they are printed in terminal"
-                " when leapp is executed - just indentation is added, for"
-                " better readability, on the beginning of every log."
-            ))
+                                    help=(
+                                        "Logs are usually stored with additional metadata. Using this"
+                                        " option, logs are printed like they are printed in terminal"
+                                        " when leapp is executed - just indentation is added, for"
+                                        " better readability, on the beginning of every log."
+                                    ))
 
     def process(self):
         cmdline = self.li_cli.cmdline
@@ -991,16 +1040,16 @@ class InspectionCLI(SubCommandBaseClass):
 
     def set_arguments(self):
         self.subparser.add_argument("--paranoid", dest="is_paranoid", action="store_true",
-            help=(
-                "Set inspection to the paranoid mode. Print possible errors"
-                " when any sub command executed by actor return non-zero exit"
-                " code. This can produce a lot of 'false positive' messages"
-                " as many such failed subcommands are expected to be valid"
-                " output. E.g. when detecting whether something is set, is"
-                " expected the subcommand could return non-zero exit code."
-                " That's why the mode is called paranoid. But sometimes could"
-                " point on hidden issue.")
-        )
+                                    help=(
+                                        "Set inspection to the paranoid mode. Print possible errors"
+                                        " when any sub command executed by actor return non-zero exit"
+                                        " code. This can produce a lot of 'false positive' messages"
+                                        " as many such failed subcommands are expected to be valid"
+                                        " output. E.g. when detecting whether something is set, is"
+                                        " expected the subcommand could return non-zero exit code."
+                                        " That's why the mode is called paranoid. But sometimes could"
+                                        " point on hidden issue.")
+                                    )
 
     def process(self):
         ldp = self.LeappDataPrinter
@@ -1020,7 +1069,8 @@ class InspectionCLI(SubCommandBaseClass):
                 print("==> {}  ({})".format(name, phase_type))
             else:
                 print("====> {}".format(name))
-            errors = ldp.get_errors(actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
+            errors = ldp.get_errors(
+                actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
             if not errors:
                 continue
             ldp._print_separator(msg="(Possible) Errors")
@@ -1032,7 +1082,6 @@ class InspectionCLI(SubCommandBaseClass):
                     # TODO: work on pretty printer of errors
                     LeappDataPrinter.print_message(err, True)
             ldp._print_separator()
-
 
     def _error_exists(self):
         # Ok, currently this returns just errors that have been reported (ErrorModel)
@@ -1058,7 +1107,7 @@ class InspectionCLI(SubCommandBaseClass):
         for log in self.LeappDatabase.get_logs():
             match = phase_regexp.search(log["data"])
             if match:
-                yield True, match.group(1) ,log["phase"]
+                yield True, match.group(1), log["phase"]
                 continue
             match = actors_regexp.search(log["data"])
             if match:
@@ -1076,6 +1125,7 @@ def set_default_subcommands(cli):
     cli.add_subcommand(ExecutionsCLI)
     cli.add_subcommand(InteractiveCLI)
     cli.add_subcommand(InspectionCLI)
+
 
 if __name__ == '__main__':
     cli = LeappInspectorCLI()
