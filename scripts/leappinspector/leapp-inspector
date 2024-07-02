@@ -8,6 +8,8 @@ import re
 import socket
 import sqlite3
 import sys
+import itertools
+from collections.abc import Mapping, Iterable
 try:
     from json.decoder import JSONDecodeError
 except ImportError:
@@ -39,6 +41,7 @@ of subcommands for the tool.
 It's expected that people implement additional extensions / subcommands which
 serve well for them.
 """
+
 
 class LeappDatabaseEmpty(Exception):
     pass
@@ -88,7 +91,7 @@ class Database(object):
             raise EnvironmentError(
                 "The {} file doesn't exist. Specify the correct path to the"
                 " leapp database file.".format(db_file)
-        )
+            )
 
         self._db_file = db_file
         self._debug = debug
@@ -132,8 +135,8 @@ class Database(object):
         to be able to get info using `.schema` cmd.
         """
         cursor = self.execute(
-                    "SELECT * from sqlite_master WHERE type='table' AND name='{}'"
-                    .format(table))
+            "SELECT * from sqlite_master WHERE type='table' AND name='{}'"
+            .format(table))
         return cursor.fetchall()
 
 
@@ -146,10 +149,32 @@ class LeappDatabase(Database):
     last execution (context) of leapp.
     """
 
-    def __init__(self, db_file='leapp.db', context=None):
+    def __init__(self, db_file='leapp.db', context=None, user_version=None):
         super(LeappDatabase, self).__init__(db_file)
         self._context = context if context else self._last_execution_context()
         self._data = self._get_audit_logs()
+        self._user_version = user_version
+
+        db_user_version = self.get_user_version()
+        if self._user_version is None:
+            self._user_version = db_user_version
+
+        if self._user_version > db_user_version:
+            raise ValueError((
+                f"Specified user version ({self._user_version}) is greater than"
+                f" the user version of database ({db_user_version})."
+            ))
+
+    def get_user_version(self):
+        """
+        Get the value of PRAGMA user_version
+        """
+        cursor = self.execute("PRAGMA user_version;")
+        user_version = cursor.fetchone()[0]
+        return user_version
+
+    def _user_version_satisfied(self, version):
+        return self._user_version >= version
 
     def get_executions(self):
         cursor = self.execute("SELECT id,context,stamp FROM execution")
@@ -243,12 +268,91 @@ class LeappDatabase(Database):
         """
         raise NotImplementedError()
 
+    def get_entities(self, kind):
+        """
+        Get a list of entities of the given kind for the selected execution.
+        Currently entities are of kind: actor, metadata.
+        """
+
+        if not self._user_version_satisfied(3):
+            return []
+
+        cmd = ("SELECT name FROM entity"
+               " WHERE kind = '{kind}' AND context = '{context}'"
+               " ORDER BY id ASC"
+               .format(kind=kind, context=self._context))
+        results = self.execute(cmd).fetchall()
+
+        return [row["name"] for row in results]
+
+    def get_entity_metadata(self, kind, name):
+        """
+        Get metadata of the specified entity.
+        """
+
+        if not self._user_version_satisfied(3):
+            return {}
+
+        cmd = ("SELECT metadata.metadata FROM entity"
+               " LEFT JOIN metadata ON metadata_hash = metadata.hash"
+               " WHERE context = '{context}' AND kind = '{kind}' AND name = '{name}'"
+               .format(context=self._context, kind=kind, name=name))
+        result = self.execute(cmd).fetchone()
+
+        if result:
+            return json.loads(result["metadata"])
+
+        return {}
+
+    def get_workflows(self):
+        """
+        Return a discovered workflows.
+        """
+
+        if not self._user_version_satisfied(3):
+            # TODO(dkubek): Can we get workflows somewhere else?
+            return []
+
+        return self.get_entities('workflow')
+
     def get_actors(self):
         """
-        Return a set of discovered actors
+        Return a set of discovered actors (in alphabetical order)
         """
-        # for row in self.get_logs(phase=""):
-        raise NotImplementedError("Requires change in the framework first")
+
+        if not self._user_version_satisfied(3):
+            return self.get_executed_actors()
+
+        return self.get_entities('actor')
+
+    def get_actor_exit_status(self, actor_name):
+        """
+        Return the exit status of the actor. Can be either:
+
+            - 'success': success or handled failure
+            - 'fail': unhandled failure
+            - 'unexecuted': not specified (unexecuted)
+            - 'unknown': not provided by the framework
+        """
+
+        if not self._user_version_satisfied(3):
+            return 'unknown'
+
+        event = next(self._filter_data(actor=actor_name, event="actor-exit-status"), None)
+        if event is None:
+            return 'unexecuted'
+
+        data = json.loads(event["data"])
+
+        exit_status = data.get("exit_status", None)
+
+        if exit_status == 0:
+            return 'success'
+
+        if exit_status == 1:
+            return 'fail'
+
+        raise NotImplementedError('Handling for exit status {} is not implemented'.format(exit_status))
 
     def get_productive_actors(self):
         """
@@ -315,6 +419,32 @@ class LeappDatabase(Database):
         except IndexError:
             return None
 
+    def get_dialogs(self, scope=None):
+        """
+        Get information about dialogs for the current context.
+        """
+
+        if not self._user_version_satisfied(3):
+            return []
+
+        cond = ["context = '{}'".format(self._context)]
+        if scope:
+            cond.append("scope = '{}'".format(scope))
+
+        results = self.execute(
+            "SELECT scope, data FROM dialog WHERE {cond}"
+            .format(cond=' AND '.join(cond))
+        ).fetchall()
+
+        dialogs = []
+        for result in results:
+            dialogs.append({
+                "scope": result["scope"],
+                "data": json.loads(result["data"])
+            })
+
+        return dialogs
+
     def get_status(self):
         """
         Return status of the execution
@@ -374,7 +504,6 @@ class LeappDatabase(Database):
         # - Keep it as it is (it's not convenient, but....)
         # ... and it this function/method really good idea at all?
 
-
         errors = self.get_messages(msg_type="ErrorModel", phase=phase, actor=actor)
 
         if check_logs:
@@ -395,6 +524,15 @@ class LeappDatabase(Database):
         return self.get_messages(msg_type="Report")
 
 
+class Color(object):
+    reset = "\033[0m" if sys.stdout.isatty() else ""
+    bold = "\033[1m" if sys.stdout.isatty() else ""
+    red = "\033[1;31m" if sys.stdout.isatty() else ""
+    green = "\033[1;32m" if sys.stdout.isatty() else ""
+    yellow = "\033[1;33m" if sys.stdout.isatty() else ""
+    blue = "\033[1;34m" if sys.stdout.isatty() else ""
+
+
 class LeappDataPrinter(LeappDatabase):
     """
     Print various leapp data in suitable format for reading.
@@ -407,8 +545,14 @@ class LeappDataPrinter(LeappDatabase):
     FULL_SEP_CHAR = "#"
     SIMPLE_SEP_CHAR = "-"
 
-    def __init__(self, db_file='leapp.db', context=None):
-        super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
+    ACTOR_STATUS_INDICATOR_UNEXECUTED = "○"
+    ACTOR_STATUS_INDICATOR_EXECUTED = "●"
+    ACTOR_STATUS_INDICATOR_UNKNOWN = "(?)"
+
+    def __init__(self, db_file='leapp.db', context=None, user_version=None):
+        super(LeappDataPrinter, self).__init__(
+            db_file=db_file, context=context, user_version=user_version
+        )
         self._width = 70
 
     def _print_header(self, header_title):
@@ -425,6 +569,210 @@ class LeappDataPrinter(LeappDatabase):
 
     def _print_tail(self):
         self._print_separator(full=True)
+
+    @staticmethod
+    def _format(elem, fmt):
+        """
+        Format a given object `elem` using the specified format `fmt`.
+
+        Parameters:
+        elem : Any
+            The object to be formatted.
+        fmt : None, callable, dict, or list
+            The format specification, which can be:
+            - None: The `elem` is converted to a string using `str(elem)`.
+            - Callable: A function `f` that returns `f(elem)`, which must be a
+              string.
+            - Dictionary: Uses `LeappDataPrinter.format_dict` for formatting.
+            - List: Uses `LeappDataPrinter.format_list` for formatting.
+
+        Returns:
+        str
+            The formatted string representation of `elem`.
+
+        Raises:
+        ValueError
+            If the format specification is not implemented for `elem`.
+        """
+
+        if fmt is None:
+            fmt = str
+
+        if callable(fmt):
+            return str(fmt(elem))
+
+        if isinstance(elem, Mapping):
+            return LeappDataPrinter.format_dict(elem, fmt)
+
+        if isinstance(elem, Iterable):
+            return LeappDataPrinter.format_list(elem, fmt)
+
+        assert ValueError("Formatting {} with {} not implemented!".format(type(elem), fmt))
+
+    @staticmethod
+    def format_list(
+            t,
+            fmt=None,
+            indent_char="  ", list_bullet="- ",
+            list_start=None, list_continue=None, list_end=None,
+            list_empty="---",
+    ):
+        """
+        Format a given list into a structured string representation.
+
+        Parameters:
+        t : list
+            The list to be formatted.
+        fmt : None, callable, or list, optional
+            - Callable: Applied to each element, returning a string representation.
+            - List: Each element specifies a format for the corresponding element in `t`.
+
+        indent_char : str, optional
+            The character(s) used for indentation (default: "  ").
+        list_bullet : str, optional
+            The bullet used for list elements (default: "- ").
+        list_start : str, optional
+            The bullet for the first list element (default: `list_bullet`).
+        list_continue : str, optional
+            The bullet for continued items (default: `indent_char`).
+        list_end : str, optional
+            The bullet for the last list element (default: `list_bullet`).
+        list_empty : str, optional
+            The string to return if the list is empty (default: "---").
+
+        Returns:
+        str
+            The formatted list as a string.
+
+        Raises:
+        ValueError
+            If `fmt` is a list but its length does not match `t`.
+        """
+
+        list_start = list_start or list_bullet
+        list_continue = list_continue or indent_char
+        list_end = list_end or list_bullet
+
+        if not t:
+            return list_empty
+
+        # Validate and normalize format specification
+        if isinstance(fmt, list):
+            if len(fmt) != len(t):
+                msg = "The fmt is of type {} and size {} which does not match the input size {}!".format(
+                    type(fmt), len(fmt), len(t))
+                raise ValueError(msg)
+
+            transform = iter(fmt)
+        else:
+            transform = itertools.repeat(fmt)
+
+        lines = []
+        for elem, tr in zip(t, transform):
+            result = LeappDataPrinter._format(elem, tr).split('\n')
+
+            lines.append([list_start, result[0]])
+            for i in range(1, len(result)):
+                lines.append([list_continue, result[i]])
+
+        if lines:
+            lines[-1][0] = list_end
+
+        return '\n'.join(''.join(line) for line in lines)
+
+    @staticmethod
+    def format_dict(d, fmt=None, indent=4, indent_char=" ", empty_field="---", justify="ljust"):
+        """
+        Format a dictionary into a structured string representation.
+
+        Parameters:
+        d : dict
+            The dictionary to be formatted.
+        fmt : None, iterable of tuples, or callable, optional
+            - Iterable of tuples: Each tuple is a format specification in the form:
+                (fieldname, key, default, fmt, child)
+              where:
+                - fieldname (str): Display name of the field.
+                - key (str): Key in the dictionary.
+                - default: Default value if key is missing; None means field will be omitted.
+                - fmt: Format specifier (see).
+                - child (bool): Whether to indent this field as a child.
+        indent : int, optional
+            Number of spaces for indentation of child elements (default: 4).
+        indent_char : str, optional
+            Character(s) used for indentation (default: " ").
+        empty_field : str, optional
+            String returned if the dictionary is empty (default: "---").
+        justify : str, optional
+            Justification method for field names, either "rjust" or "ljust" (default: "ljust").
+
+        Returns:
+        str
+            The formatted dictionary as a string.
+
+        Raises:
+        ValueError
+            If any entry in `fmt` is an invalid format specification.
+        """
+
+        if not d:
+            return empty_field
+
+        if isinstance(fmt, Iterable):
+            for entry_fmt in fmt:
+                if isinstance(entry_fmt, tuple) and len(entry_fmt) != 5:
+                    msg = "Entry {} is not a valid format specification".format(entry_fmt)
+                    raise ValueError(msg)
+        else:
+            fmt = [(key, key, None, fmt, False) for key in d]
+
+        fieldname_align_width = max(len(f[0]) for f in fmt)
+
+        lines = []
+
+        for fieldname, field, default, field_fmt, is_child in fmt:
+            offset = indent if is_child else fieldname_align_width + 2
+
+            value = d.get(field, default)
+            if value is None:
+                continue
+            result = LeappDataPrinter._format(value, field_fmt).split('\n')
+
+            fieldname = getattr(fieldname + ":", justify)(fieldname_align_width + 1)
+            for i, line in enumerate(result):
+                if i == 0:
+                    if not is_child:
+                        lines.append(["{} {}".format(fieldname, line)])
+                        continue
+
+                    lines.append(["{}".format(fieldname)])
+
+                lines.append([indent_char * offset, line])
+
+        return '\n'.join(''.join(line) for line in lines)
+
+    @staticmethod
+    def format_exit_status_indicator(exit_status):
+
+        symbol = LeappDataPrinter.ACTOR_STATUS_INDICATOR_EXECUTED
+        if exit_status == "unexecuted":
+            symbol = LeappDataPrinter.ACTOR_STATUS_INDICATOR_UNEXECUTED
+        elif exit_status == "unknown":
+            symbol = LeappDataPrinter.ACTOR_STATUS_INDICATOR_UNKNOWN
+
+        color = Color.reset
+        if exit_status == "success":
+            color = Color.green
+        elif exit_status == "fail":
+            color = Color.red
+        elif exit_status == "unexecuted":
+            color = Color.blue
+
+        indicator = ""
+        if sys.stdout.isatty():
+            indicator = "{color}{symbol}{reset}".format(color=color, symbol=symbol, reset=Color.reset)
+
+        return indicator
 
     @staticmethod
     def _fmt_msg_data(data, recursive=False, stack=0):
@@ -446,13 +794,12 @@ class LeappDataPrinter(LeappDatabase):
         # recursive processing. Add in case any example is discovered.
         if recursive and isinstance(json_data, dict):
             for key, val in json_data.items():
-                    json_data[key] = LeappDataPrinter._fmt_msg_data(
-                        val, recursive, stack + 1
-                    )
+                json_data[key] = LeappDataPrinter._fmt_msg_data(
+                    val, recursive, stack + 1
+                )
         if stack > 0:
             return json_data
         return json.dumps(json_data, indent=4, sort_keys=True)
-
 
     @staticmethod
     def print_message(msg, recursive=False):
@@ -476,7 +823,13 @@ class LeappDataPrinter(LeappDatabase):
             print()
         self._print_tail()
 
-    def print_actor(self, actor_name, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+    def print_actor(
+            self, actor_name,
+            log_level=LogLevels.DEBUG,
+            terminal_like_logs=True,
+            show_description=False,
+            show_config=False
+    ):
         """
         Print information about the specified actor.
 
@@ -488,34 +841,127 @@ class LeappDataPrinter(LeappDatabase):
         and print the pure data only (like printed in terminal during the leapp
         execution).
         """
+
         def get_metadata(actor_name):
-            # this could be possibly later replace by function like
-            # self.get_actor(actor_name)
-            # of course, with additional data like produced msgs, ....
+            metadata = self.get_entity_metadata('actor', actor_name)
+
             actors_regexp = re.compile(r"Executing actor ([^\s]+)")
             for log in self._filter_data(event="log-message"):
                 match = actors_regexp.search(log["data"])
                 if match and match.group(1) == actor_name:
-                    return {
-                        "phase": log["phase"],
-                        "stamp": log["stamp"],
-                    }
-            return {}
+                    metadata["stamp"] = log["stamp"]
+                    metadata["phase"] = metadata.get("phase", None) or log["phase"]
+                    break
 
-        msgs = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+            return metadata
+
         actor = get_metadata(actor_name)
-        print("Actor: {}".format(actor_name))
-        print("Executed: {}".format(actor.get("stamp", None) is not None))
-        print("Phase: {}".format(actor.get("phase","")))
-        print("Started: {}".format(actor.get("stamp","")))
-        print("Produced messages:")
-        if msgs:
-            for msg in msgs:
-                print("    - {}".format(msg))
-        else:
-            print("    ----")
+        if actor is None:
+            print("Actor {} not found!".format(actor_name), file=sys.stderr)
+            return
 
-        print("Executed shell commands:")
+        actor["name"] = actor.get("name", None) or actor_name
+        actor["exit_status"] = self.get_actor_exit_status(actor_name)
+        actor["msgs"] = [msg["type"] for msg in self.get_messages(actor=actor_name)]
+
+        indicator = LeappDataPrinter.format_exit_status_indicator(actor['exit_status'])
+        print("{indicator} {actor_name}".format(indicator=indicator, actor_name=actor_name))
+
+        list_style = {
+            "indent_char": " ", "list_bullet": "── ",
+            "list_start": "├─ ", "list_continue": "│  ", "list_end": "└─ ",
+            "list_empty": "---"}
+
+        def pretty_list(t):
+            return LeappDataPrinter.format_list(t, **list_style)
+
+        def lstrip_lines(s):
+            return '\n'.join(line.lstrip() for line in s.split('\n'))
+
+        def recursive_format_dict(field):
+            if not isinstance(field, dict):
+                if isinstance(field, str):
+                    return lstrip_lines(field)
+                return field
+
+            ans = {}
+            for key in field:
+                ans[key] = recursive_format_dict(field[key])
+
+            return LeappDataPrinter.format_dict(ans)
+
+        def format_config(config):
+            config_fmt = [
+                ("Class", "class_name", "", None, False),
+                ("Section", "section", "", None, False),
+                ("Name", "name", "", None, False),
+                ("Description", "description", "", lstrip_lines, True),
+                ("Type", "type", "", recursive_format_dict, False),
+                ("Default", "default", "", None, False),
+            ]
+
+            return LeappDataPrinter.format_dict(config, fmt=config_fmt)
+
+        def format_config(config):
+            return recursive_format_dict(config)
+
+        def format_config_schemas(t):
+            if show_config:
+                return LeappDataPrinter.format_list(t, fmt=format_config, **list_style)
+
+            return "[OPTIMIZED OUT]"
+
+        def format_description(description):
+            if show_description:
+                return lstrip_lines(description)
+
+            return "[OPTIMIZED OUT]"
+
+        actor_fmt = [
+            ("Actor", "name", None, None, False),
+            ("Class", "class_name", None, None, False),
+            ("Description", "description", None, format_description, show_description),
+            ("Path", "path", None, None, False),
+            ("Exit Status", "exit_status", None, None, False),
+            ("Executed", "stamp", None, lambda _: _ is not None, False),
+            ("Started", "stamp", None, lambda _: _ or "---", False),
+            ("Phase", "phase", "", None, False),
+            ("Tags", "tags", None, pretty_list, True),
+            ("Config Schemas", "config_schemas", None, format_config_schemas, show_config),
+            ("Config", "config", None, format_config, True),
+            ("Consumes", "consumes", None, pretty_list, True),
+            ("Produces", "produces", None, pretty_list, True),
+            ("Produced", "msgs", None, pretty_list, True),
+        ]
+        print(LeappDataPrinter.format_dict(actor, actor_fmt))
+        print()
+
+        dialogs = self.get_dialogs(actor_name)
+
+        def component_fmt(comp):
+            fmt = [
+                ("Label", "label", "", None, False),
+                ("Description", "description", "", None, False),
+                ("Reason", "reason", "", None, False),
+                ("Key", "key", "", None, False),
+                ("Value", "value", "", None, False),
+            ]
+            return LeappDataPrinter.format_dict(comp, fmt=fmt)
+
+        def dialog_fmt(dialog):
+            fmt = [
+                ("Title", "title", "", None, False),
+                ("Reason", "reason", "", None, False),
+                ("Components", "components", [], lambda _: LeappDataPrinter.format_list(
+                    _, fmt=component_fmt, **list_style), True),
+            ]
+            return LeappDataPrinter.format_dict(dialog["data"], fmt=fmt)
+
+        if dialogs:
+            print("Dialogs:")
+            print(LeappDataPrinter.format_list(dialogs, fmt=dialog_fmt, **list_style))
+            print()
+
         # NOTE(pstodulk): That regular is terrible, I know
         # be aware that order of json fields in the log is different on
         # py2 and py3
@@ -525,36 +971,95 @@ class LeappDataPrinter(LeappDatabase):
             match = cmd_regexp.search(log["data"])
             if match:
                 cmds.append(match.group(1))
-        if cmds:
-            for cmd in cmds:
-                print("    - {}".format(cmd))
-        else:
-            print("    ----")
 
-        print("Logs:")
-        log = None
-        for log in self.get_logs(actor=actor_name, log_level=log_level):
+        if cmds:
+            print("Executed shell commands:")
+            print(LeappDataPrinter.format_list(cmds))
+            print()
+
+        logs = self.get_logs(actor=actor_name, log_level=log_level)
+        for i, log in enumerate(logs):
+            if i == 0:
+                print("Logs:")
+
             if terminal_like_logs:
                 print("    {}".format(json.loads(log["data"])["message"]))
             else:
                 print("--- {}".format(log["data"]))
-        if not log:
-            print("    ----")
 
-    def print_actors(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+    def print_actors(self, **kwargs):
         """
         Print various information about actors
         """
-        # FIXME: currently prints info just about executed actors, add
-        # possibility of filtering, and detection of all actors!!
-        actors = self.get_executed_actors()
-        self._print_header("EXECUTED ACTORS")
+
+        actors = self.get_actors()
+        self._print_header("DISCOVERED ACTORS")
         try:
-            # pop actors in the execution order
-            self.print_actor(actors.pop(0), log_level=log_level, terminal_like_logs=terminal_like_logs)
+            self.print_actor(actors.pop(0), **kwargs)
             for actor_name in actors:
                 self._print_separator()
-                self.print_actor(actor_name, log_level=log_level, terminal_like_logs=terminal_like_logs)
+                self.print_actor(actor_name, **kwargs)
+        except IndexError:
+            print()
+        self._print_tail()
+
+    def print_workflow(self, workflow_name, short=False):
+        """
+        Print information about the specified workflow.
+        """
+
+        workflow = self.get_entity_metadata('workflow', workflow_name)
+        if workflow is None:
+            print("Workflow {} not found!".format(workflow_name), file=sys.stderr)
+            return
+
+        workflow['phases'] = sorted(
+            workflow.get("phases", []),
+            key=lambda phase: phase["index"]
+        )
+
+        list_style = {
+            "indent_char": "  ", "list_bullet": "● ",
+            "list_start": "│\n●  ", "list_continue": "│  ", "list_end": "└  ",
+            "list_empty": "---"}
+
+        def phase_fmt_long(phase):
+            fmt = [
+                ("Name", "name", "", None, False),
+                ("Class name", "class_name", "", None, False),
+                ("Index", "index", "", None, False),
+                ("Policies", "policies", [], LeappDataPrinter.format_dict, True),
+                ("Flags", "flags", [], LeappDataPrinter.format_dict, True),
+                ("Filter", "filter", [], LeappDataPrinter.format_dict, True),
+            ]
+            return LeappDataPrinter.format_dict(phase, fmt=fmt)
+
+        def phase_fmt_short(phase):
+            return phase.get("name", "")
+
+        phase_fmt = phase_fmt_short if short else phase_fmt_long
+        list_style = {} if short else list_style
+
+        workflow_fmt = [
+            ("Name", "name", "", None, False),
+            ("Short Name", "short_name", "", None, False),
+            ("Tag", "tag", "", None, False),
+            ("Description", "description", "", None, False),
+            ("Phases", "phases", [], lambda _: LeappDataPrinter.format_list(_, fmt=phase_fmt, **list_style), True)
+        ]
+        print(LeappDataPrinter.format_dict(workflow, fmt=workflow_fmt))
+
+    def print_workflows(self, short=False):
+        """
+        Print various information about workflows.
+        """
+        workflows = self.get_workflows()
+        self._print_header("DISCOVERED WORKFLOWS")
+        try:
+            self.print_workflow(workflows.pop(0), short=short)
+            for workflow_name in workflows:
+                self._print_separator()
+                self.print_workflow(workflow_name)
         except IndexError:
             print()
         self._print_tail()
@@ -586,6 +1091,7 @@ class LeappDataPrinter(LeappDatabase):
 # #################################
 # Stuff related to the tool and CLI
 # #################################
+
 
 class SubCommandBaseClass():
     """
@@ -643,7 +1149,6 @@ class SubCommandBaseClass():
             )
         return self.help_short_str
 
-
     def set_arguments(self):
         raise NotImplementedError("Must be implemented in derived class.")
 
@@ -677,7 +1182,7 @@ class LeappInspectorCLI:
     Adjustable parsing of the CLI based on registered sub-commands.
     """
 
-    DEFAULT_DB_PATHS= ["leapp.db", "/var/lib/leapp/leapp.db"]
+    DEFAULT_DB_PATHS = ["leapp.db", "/var/lib/leapp/leapp.db"]
     LEAPP_CONFIG_FILE = "/etc/leapp/leapp.conf"
 
     def __init__(self):
@@ -705,7 +1210,6 @@ class LeappInspectorCLI:
         """
         return self._subparsers.add_parser(name, **kwargs)
 
-
     def add_subcommand(self, subcmd_class):
         """
         Add/register new subcommand for the Leapp Inspector tool
@@ -719,7 +1223,7 @@ class LeappInspectorCLI:
         """
         Parse cmdline input
         """
-        self.cmdline =  self._parser.parse_args()
+        self.cmdline = self._parser.parse_args()
 
     def process(self):
         """
@@ -744,6 +1248,7 @@ class LeappInspectorCLI:
         self._ld = LeappDatabase(
             db_file=self.cmdline.db_file,
             context=self.cmdline.context,
+            user_version=self.cmdline.user_version,
         )
         return self._ld
 
@@ -756,6 +1261,7 @@ class LeappInspectorCLI:
         self._ldp = LeappDataPrinter(
             db_file=self.cmdline.db_file,
             context=self.cmdline.context,
+            user_version=self.cmdline.user_version,
         )
         return self._ldp
 
@@ -776,6 +1282,15 @@ class LeappInspectorCLI:
                 " is processed when not specified. So see possible contexts"
                 " you can use e.g. `leapp-inspector contexts` cmd. Example"
                 " of context: '2548112d-3d20-49ca-908f-2b4b6b3bdb84'")
+        )
+        self._parser.add_argument(
+            "--user-version", metavar="USER_VERSION", dest="user_version", type=int, default=None,
+            help=(
+                "Specify the USER_VERSION (the PRAGMA of the leapp database)"
+                " that should be used to determine the format and availability"
+                " of information in the leapp database. By defaul, USER_VERSION"
+                " is the latest version set in the database."
+            )
         )
 
     def _default_path(self):
@@ -829,6 +1344,37 @@ class HelpCLI(SubCommandBaseClass):
         self.li_cli.print_help()
 
 
+class WorkflowsCLI(SubCommandBaseClass):
+    """
+    The workflow subcommand for actions with workflows.
+    """
+
+    name = "workflows"
+    help_short_str = "Print information about workflows"
+
+    def set_arguments(self):
+        self.subparser.add_argument("--list", dest="list", action="store_true",
+                                    help="List all discovered workflows.")
+        self.subparser.add_argument("--workflow", dest="workflow", default=None,
+                                    help="Print information about selected workflow.")
+        self.subparser.add_argument("--short", dest="short", action="store_true",
+                                    help="Print only names of phases.")
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+
+        if cmdline.list:
+            for workflow in sorted(self.LeappDatabase.get_workflows()):
+                print("    {}".format(workflow))
+            return
+
+        if cmdline.workflow:
+            self.LeappDataPrinter.print_workflow(cmdline.workflow, short=cmdline.short)
+            return
+
+        self.LeappDataPrinter.print_workflows(short=cmdline.short)
+
+
 class MessagesCLI(SubCommandBaseClass):
     """
     The message subcommand for actions with messages
@@ -839,19 +1385,19 @@ class MessagesCLI(SubCommandBaseClass):
 
     def set_arguments(self):
         self.subparser.add_argument("--list", dest="msgs", action="store_true",
-            help="List types of all produced messages.")
+                                    help="List types of all produced messages.")
         self.subparser.add_argument("--actor", dest="actor", default=None,
-            help="Print only messages produced by the actor.")
+                                    help="Print only messages produced by the actor.")
         self.subparser.add_argument("--type", dest="msg_type", default=None,
-            help="Print only messages ot the specified type.")
+                                    help="Print only messages ot the specified type.")
         self.subparser.add_argument("--phase", dest="phase", default=None,
-            help="Print only messages produced during the specified phase.")
+                                    help="Print only messages produced during the specified phase.")
         self.subparser.add_argument("--recursive-expand", dest="recursive", action="store_true",
-            help=(
-                "Expand all JSON data recursively. IOW, any json encoded"
-                 " as a string is decoded. Try it with the Report type to see"
-                 " the difference."
-        ))
+                                    help=(
+                                        "Expand all JSON data recursively. IOW, any json encoded"
+                                        " as a string is decoded. Try it with the Report type to see"
+                                        " the difference."
+                                    ))
 
     def process(self):
         cmdline = self.li_cli.cmdline
@@ -887,27 +1433,41 @@ class ActorsCLI(SubCommandBaseClass):
         # TODO: currently we can obtain only dirnames of actors, not names of actors,
         # - which means we cannot effectively use this information right now.
         # - propose change in leapp to be able to get name of every discovered actor
-        # group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
-        #    help="List all discovered actors")
+        group.add_argument("--list", dest="list", action="store_const", const=ActorSelector.ANY,
+                           help="List all discovered actors")
         group.add_argument("--list-executed", dest="list", action="store_const", const=ActorSelector.EXECUTED,
-            help="List all executed actors")
+                           help="List all executed actors")
         group.add_argument("--list-producers", dest="list", action="store_const", const=ActorSelector.PRODUCER,
-            help="List all actors that produced any messages")
+                           help="List all actors that produced any messages")
         group.add_argument("--actor", dest="actor", default=None,
-            help="Print data related just to the specified actor.")
-        self.subparser.add_argument("--log-level", dest="log_level", default="DEBUG",
+                           help="Print data related just to the specified actor.")
+        self.subparser.add_argument(
+            "--log-level", dest="log_level", default="DEBUG",
             choices=self._log_level_map.keys(),
             help=(
                 "Print logs of the given level and lower. The DEBUG level"
                 " is the highest one and set by default. The ERROR level"
                 " is the lowest."
             ))
-        self.subparser.add_argument("--terminal-like", dest="terminal_like", action="store_true",
+        self.subparser.add_argument(
+            "--terminal-like", dest="terminal_like", action="store_true",
             help=(
                 "Logs are usually stored with additional metadata. Using this"
                 " option, logs are printed like they are printed in terminal"
                 " when leapp is executed - just indentation is added, for"
                 " better readability, on the beginning of every log."
+            ))
+        self.subparser.add_argument(
+            "--show-description", dest="show_description", action="store_true",
+            help=(
+                "For enhanced readability, description is hidden by default."
+                " Enable this flag to show the actor description."
+            ))
+        self.subparser.add_argument(
+            "--show-config", dest="show_config", action="store_true",
+            help=(
+                "For enhanced readability, config schema is hidden by default."
+                " Enable this flag to show the actor config schema."
             ))
 
     def process(self):
@@ -919,19 +1479,31 @@ class ActorsCLI(SubCommandBaseClass):
         }
 
         if cmdline.list:
-            for actor in sorted(actors_dict[cmdline.list]()):
-                print("    {}".format(actor))
+            actors = actors_dict[cmdline.list]()
+            # NOTE(dkubek): uncomment if want to print in alphabetical order
+            # actors = sorted(actors)
+            for actor in actors:
+                exit_status = self.LeappDatabase.get_actor_exit_status(actor)
+
+                indicator = LeappDataPrinter.format_exit_status_indicator(exit_status)
+                print("{} {}".format(indicator, actor))
             return
+
         if cmdline.actor:
             self.LeappDataPrinter.print_actor(
                 cmdline.actor,
                 log_level=self._log_level_map[cmdline.log_level],
-                terminal_like_logs=cmdline.terminal_like
+                terminal_like_logs=cmdline.terminal_like,
+                show_description=cmdline.show_description,
+                show_config=cmdline.show_config,
             )
             return
+
         self.LeappDataPrinter.print_actors(
             log_level=self._log_level_map[cmdline.log_level],
-            terminal_like_logs=cmdline.terminal_like
+            terminal_like_logs=cmdline.terminal_like,
+            show_description=cmdline.show_description,
+            show_config=cmdline.show_config,
         )
 
 
@@ -993,16 +1565,16 @@ class InspectionCLI(SubCommandBaseClass):
 
     def set_arguments(self):
         self.subparser.add_argument("--paranoid", dest="is_paranoid", action="store_true",
-            help=(
-                "Set inspection to the paranoid mode. Print possible errors"
-                " when any sub command executed by actor return non-zero exit"
-                " code. This can produce a lot of 'false positive' messages"
-                " as many such failed subcommands are expected to be valid"
-                " output. E.g. when detecting whether something is set, is"
-                " expected the subcommand could return non-zero exit code."
-                " That's why the mode is called paranoid. But sometimes could"
-                " point on hidden issue.")
-        )
+                                    help=(
+                                        "Set inspection to the paranoid mode. Print possible errors"
+                                        " when any sub command executed by actor return non-zero exit"
+                                        " code. This can produce a lot of 'false positive' messages"
+                                        " as many such failed subcommands are expected to be valid"
+                                        " output. E.g. when detecting whether something is set, is"
+                                        " expected the subcommand could return non-zero exit code."
+                                        " That's why the mode is called paranoid. But sometimes could"
+                                        " point on hidden issue.")
+                                    )
 
     def process(self):
         ldp = self.LeappDataPrinter
@@ -1035,7 +1607,6 @@ class InspectionCLI(SubCommandBaseClass):
                     LeappDataPrinter.print_message(err, True)
             ldp._print_separator()
 
-
     def _error_exists(self):
         # Ok, currently this returns just errors that have been reported (ErrorModel)
         # IOW, only fatal errors. Not errors logged used the logger.
@@ -1060,7 +1631,7 @@ class InspectionCLI(SubCommandBaseClass):
         for log in self.LeappDatabase.get_logs():
             match = phase_regexp.search(log["data"])
             if match:
-                yield True, match.group(1) ,log["phase"]
+                yield True, match.group(1), log["phase"]
                 continue
             match = actors_regexp.search(log["data"])
             if match:
@@ -1073,11 +1644,13 @@ class InspectionCLI(SubCommandBaseClass):
 
 def set_default_subcommands(cli):
     cli.add_subcommand(HelpCLI)
+    cli.add_subcommand(WorkflowsCLI)
     cli.add_subcommand(ActorsCLI)
     cli.add_subcommand(MessagesCLI)
     cli.add_subcommand(ExecutionsCLI)
     cli.add_subcommand(InteractiveCLI)
     cli.add_subcommand(InspectionCLI)
+
 
 if __name__ == '__main__':
     try:
