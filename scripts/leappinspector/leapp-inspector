@@ -259,7 +259,10 @@ class LeappDatabase(Database):
                .format(context=self._context, kind=kind, name=name))
         result = self.execute(cmd).fetchone()
 
-        return json.loads(result["metadata"])
+        if result:
+            return json.loads(result["metadata"])
+
+        return None
 
     def get_actors(self):
         """
@@ -272,6 +275,21 @@ class LeappDatabase(Database):
         results = self.execute(cmd).fetchall()
 
         return [row["name"] for row in results]
+
+    def get_actor_exit_status(self, actor_name):
+        # TODO: doc
+        """
+        Return the exit status of the actor.
+        """
+
+        event = next(self._filter_data(actor=actor_name, event="actor-exit-status"), None)
+        if event is None:
+            return
+
+        data = json.loads(event["data"])
+
+        return data.get("exit_status", None)
+
 
     def get_productive_actors(self):
         """
@@ -352,6 +370,7 @@ class LeappDatabase(Database):
           TODO: investigate the messages in audit whether it is possible to
                 detect it
         """
+        # TODO: WORK FOR ME WEEEEEE
         raise NotImplementedError()
 
     def _get_cmd_results(self, phase=None, actor=None, failed_only=False):
@@ -523,6 +542,7 @@ class LeappDataPrinter(LeappDatabase):
         and print the pure data only (like printed in terminal during the leapp
         execution).
         """
+
         def get_metadata(actor_name):
             # this could be possibly later replace by function like
             # self.get_actor(actor_name)
@@ -539,6 +559,11 @@ class LeappDataPrinter(LeappDatabase):
             return metadata
 
         actor = get_metadata(actor_name)
+        if actor is None:
+            print("Actor {} not found!".format(actor_name), file=sys.stderr)
+            return
+
+        actor["exit_status"] = self.get_actor_exit_status(actor_name)
         actor["msgs"] = [msg["type"] for msg in self.get_messages(actor=actor_name)]
 
         fields = [
@@ -546,6 +571,7 @@ class LeappDataPrinter(LeappDatabase):
             ("Actor", "name", "", _id),
             ("Class", "class_name", "", _id),
             ("Path", "path", "", _id),
+            ("Exit Status", "exit_status", None, _id),
             ("Executed", "stamp", None, lambda _: _ is not None),
             ("Started", "stamp", "", _id),
             ("Phase", "phase", "", _id),
