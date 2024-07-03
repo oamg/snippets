@@ -247,6 +247,19 @@ class LeappDatabase(Database):
         """
         raise NotImplementedError()
 
+    def get_entities(self, kind):
+        # TODO: doc what kind of entities
+        """
+        Get a list of entities of the given kind for the selected execution.
+        """
+
+        cmd = ("SELECT name FROM entity"
+               " WHERE kind = '{kind}' AND context = '{context}'"
+               .format(kind=kind, context=self._context))
+        results = self.execute(cmd).fetchall()
+
+        return [row["name"] for row in results]
+
     def get_entity_metadata(self, kind, name):
         """
         Get information about specific actor including all metadata.
@@ -264,17 +277,19 @@ class LeappDatabase(Database):
 
         return None
 
+    def get_workflows(self):
+        """
+        Return a discovered workflows.
+        """
+
+        return self.get_entities('workflow')
+
     def get_actors(self):
         """
         Return a set of discovered actors
         """
 
-        cmd = ("SELECT name FROM entity"
-               " WHERE kind = 'actor' AND context = '{context}'"
-               .format(context=self._context))
-        results = self.execute(cmd).fetchall()
-
-        return [row["name"] for row in results]
+        return self.get_entities('actor')
 
     def get_actor_exit_status(self, actor_name):
         # TODO: doc
@@ -289,7 +304,6 @@ class LeappDatabase(Database):
         data = json.loads(event["data"])
 
         return data.get("exit_status", None)
-
 
     def get_productive_actors(self):
         """
@@ -573,7 +587,7 @@ class LeappDataPrinter(LeappDatabase):
             ("Path", "path", "", _id),
             ("Exit Status", "exit_status", None, _id),
             ("Executed", "stamp", None, lambda _: _ is not None),
-            ("Started", "stamp", "", _id),
+            ("Started", "stamp", None, lambda _: _ or "---"),
             ("Phase", "phase", "", _id),
             ("Tags", "tags", (), LeappDataPrinter._fmt_as_bullet_points),
             ("Consumes", "consumes", (), LeappDataPrinter._fmt_as_bullet_points),
@@ -614,19 +628,73 @@ class LeappDataPrinter(LeappDatabase):
         """
         Print various information about actors
         """
-        # FIXME: currently prints info just about executed actors, add
-        # possibility of filtering, and detection of all actors!!
         actors = self.get_actors()
         self._print_header("DISCOVERED ACTORS")
         try:
-            # TODO: really execution order?
-            # pop actors in the execution order
             self.print_actor(actors.pop(0), log_level=log_level,
                              terminal_like_logs=terminal_like_logs)
             for actor_name in actors:
                 self._print_separator()
                 self.print_actor(actor_name, log_level=log_level,
                                  terminal_like_logs=terminal_like_logs)
+        except IndexError:
+            print()
+        self._print_tail()
+
+    def print_workflow(self, workflow_name):
+        """
+        Print information about the specified workflow.
+        """
+
+        workflow = self.get_entity_metadata('workflow', workflow_name)
+        if workflow is None:
+            print("Workflow {} not found!".format(workflow_name), file=sys.stderr)
+            return
+
+        fields = [
+            # (field to print, field, default value, fn)
+            ("Name", "name", "", _id),
+            ("Short Name", "short_name", "", _id),
+            ("Tag", "tag", "", _id),
+            ("Description", "description", "", _id),
+        ]
+        for print_field, field, default, fn in fields:
+            print("{}: {}".format(print_field, fn(workflow.get(field, default))))
+
+        phases = sorted(
+            workflow.get("phases", list()),
+            key=lambda phase: phase["index"]
+        )
+        print("Phases:")
+        for phase in phases:
+            print("   │ ")
+            print("   v ", "Name:", phase['name'])
+            print("   │ ", "Class Name:", phase['class_name'])
+            print("   │ ", "Index:", phase['index'])
+            print("   │ ", "Policies:")
+            for policy in phase['policies']:
+                print(" " * 3 + "│" + "      -", "{}:".format(policy), phase['policies'][policy])
+            print("   │ ", "Flags:")
+            for flag in phase['flags']:
+                print(" " * 3 + "│" + "      -", "{}:".format(flag), phase['flags'][flag])
+            print("   │ ", "Filter:")
+            for filter in phase['filter']:
+                print(" " * 3 + "│" + "      -", "{}:".format(filter), phase['filter'][filter])
+            print("   │ ")
+            print("   ├" + "─" * 20)
+
+
+    def print_workflows(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
+        """
+        Print various information about workflows
+        """
+        workflows = self.get_workflows()
+        self._print_header("DISCOVERED WORKFLOWS")
+        try:
+            self.print_workflow(workflows.pop(0))
+            for workflow_name in workflows:
+                self._print_separator()
+                self.print_workflow(workflow_name)
         except IndexError:
             print()
         self._print_tail()
@@ -901,6 +969,34 @@ class HelpCLI(SubCommandBaseClass):
         self.li_cli.print_help()
 
 
+class WorkflowsCLI(SubCommandBaseClass):
+    """
+    The workflow subcommand for actions with workflows 
+    """
+
+    name = "workflows"
+    help_short_str = "Print information about workflows"
+
+    def set_arguments(self):
+        self.subparser.add_argument("--list", dest="list", action="store_true",
+                                    help="List types of all produced messages.")
+        self.subparser.add_argument("--workflow", dest="workflow", default=None,
+                                    help="Print information about selected workflow.")
+
+    def process(self):
+        cmdline = self.li_cli.cmdline
+
+        if cmdline.list:
+            for actor in sorted(self.LeappDatabase.get_models()):
+                print("    {}".format(actor))
+            return
+
+        if cmdline.workflow:
+            self.LeappDataPrinter.print_workflow(cmdline.workflow)
+
+        self.LeappDataPrinter.print_workflows()
+
+
 class MessagesCLI(SubCommandBaseClass):
     """
     The message subcommand for actions with messages
@@ -1146,6 +1242,7 @@ class InspectionCLI(SubCommandBaseClass):
 
 def set_default_subcommands(cli):
     cli.add_subcommand(HelpCLI)
+    cli.add_subcommand(WorkflowsCLI)
     cli.add_subcommand(ActorsCLI)
     cli.add_subcommand(MessagesCLI)
     cli.add_subcommand(ExecutionsCLI)
