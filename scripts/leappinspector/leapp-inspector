@@ -266,6 +266,7 @@ class LeappDatabase(Database):
 
         # TODO: kind is one of actor, workflow ....
         """
+
         cmd = ("SELECT metadata.metadata FROM entity"
                " LEFT JOIN metadata ON metadata_hash = metadata.hash"
                " WHERE context = '{context}' AND kind = '{kind}' AND name = '{name}'"
@@ -369,6 +370,27 @@ class LeappDatabase(Database):
             return self.get_executed_actors()[-1]
         except IndexError:
             return None
+
+    def get_dialogs(self, scope=None):
+        # TODO: doc
+
+        cond = ["context = '{}'".format(self._context)]
+        if scope:
+            cond.append("scope = '{}'".format(scope))
+
+        cmd = ("SELECT scope, data FROM dialog WHERE {cond}"
+               .format(cond=' AND '.join(cond)))
+        results = self.execute(cmd).fetchall()
+
+        dialogs = []
+        for result in results:
+            dialogs.append({
+                "scope": result["scope"],
+                "data": json.loads(result["data"])
+            })
+
+        return dialogs
+
 
     def get_status(self):
         """
@@ -598,6 +620,21 @@ class LeappDataPrinter(LeappDatabase):
         for print_field, field, default, fn in fields:
             print("{}: {}".format(print_field, fn(actor.get(field, default))))
 
+        print("Dialogs:")
+        dialogs = self.get_dialogs(actor_name)
+        for dialog in dialogs:
+            data = dialog["data"]
+            print("    Title: {}".format(data.get("title", None)))
+            print("    Reason: {}".format(data.get("reason", None)))
+            for component in data["components"]:
+                print("        Label: {}".format(component.get("label", "NO-LABEL")))
+                print("        Description: {}".format(component.get("description", None) or "----"))
+                print("        Reason: {}".format(component.get("reason", None) or "----"))
+                print("        Key: {}".format(component.get("key", None) or "----"))
+                print("        Value: {}".format(component.get("value", None) or "----"))
+        if not dialogs:
+            print("    ----")
+
         print("Executed shell commands:")
         # NOTE(pstodulk): That regular is terrible, I know
         # be aware that order of json fields in the log is different on
@@ -682,7 +719,6 @@ class LeappDataPrinter(LeappDatabase):
                 print(" " * 3 + "│" + "      -", "{}:".format(filter), phase['filter'][filter])
             print("   │ ")
             print("   ├" + "─" * 20)
-
 
     def print_workflows(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
         """
@@ -971,7 +1007,7 @@ class HelpCLI(SubCommandBaseClass):
 
 class WorkflowsCLI(SubCommandBaseClass):
     """
-    The workflow subcommand for actions with workflows 
+    The workflow subcommand for actions with workflows.
     """
 
     name = "workflows"
