@@ -6,6 +6,8 @@ import os
 import re
 import sqlite3
 import sys
+import itertools
+from collections.abc import Mapping, Iterable
 try:
     from json.decoder import JSONDecodeError
 except ImportError:
@@ -74,9 +76,126 @@ def print_rows(rows):
     for row in rows:
         print_row(row)
 
+class Color(object):
+    reset = "\033[0m" if sys.stdout.isatty() else ""
+    bold = "\033[1m" if sys.stdout.isatty() else ""
+    red = "\033[1;31m" if sys.stdout.isatty() else ""
+    green = "\033[1;32m" if sys.stdout.isatty() else ""
+    yellow = "\033[1;33m" if sys.stdout.isatty() else ""
+    blue = "\033[1;34m" if sys.stdout.isatty() else ""
 
 def _id(x):
-    return x
+    return str(x)
+
+
+def _format(elem, fmt):
+    """
+    Format given element using given format specification
+    """
+
+    if fmt is None:
+        fmt = _id
+
+    if callable(fmt):
+        return str(fmt(elem))
+
+    if isinstance(elem, Mapping):
+        return format_dict(elem, fmt)
+
+    if isinstance(elem, Iterable):
+        return format_list(elem, fmt)
+
+    assert ValueError("Formatting {} with {} not implemented!".format(type(elem), fmt))
+
+
+def format_list(
+        t,
+        fmt=None,
+        indent_char="  ", list_bullet="- ",
+        list_start=None, list_continue=None, list_end=None,
+        list_empty="---",
+):
+    """
+    Format given list
+
+    transform can be:
+     - function => applies function to all elements of the list
+     - list => assumes a list of transforms. must be same size az the list
+    """
+
+    list_start = list_start or list_bullet
+    list_continue = list_continue or indent_char
+    list_end = list_end or list_bullet
+
+    if not t:
+        return list_empty
+
+    # Validate and normalize format specification
+    if isinstance(fmt, list):
+        if len(fmt) != len(t):
+            msg = "The fmt is of type {} and size {} which does not match the input size {}!".format(
+                type(fmt), len(fmt), len(t))
+            raise ValueError(msg)
+
+        transform = iter(fmt)
+    else:
+        transform = itertools.repeat(fmt)
+
+    lines = []
+    for elem, tr in zip(t, transform):
+        result = _format(elem, tr).split('\n')
+
+        lines.append([list_start, result[0]])
+        for i in range(1, len(result)):
+            lines.append([list_continue, result[i]])
+
+    if lines:
+        lines[-1][0] = list_end
+
+    return '\n'.join(''.join(line) for line in lines)
+
+
+def format_dict(d, format=None, indent=4, indent_char=" ", empty_field="---", justify="ljust"):
+    """
+    Format given dict
+
+    transform can be:
+     - function => applies function to all elements of the list
+     - list => assumes a list of transforms. must be same size az the list
+    """
+
+    if not d:
+        return empty_field
+
+    if isinstance(format, Iterable):
+        for fmt in format:
+            if isinstance(fmt, tuple) and len(fmt) != 5:
+                msg = "Entry {} is not a valid format specification".format(fmt)
+                raise ValueError(msg)
+    else:
+        format = [(key, key, None, format, False) for key in d]
+
+    fieldname_align_width = max(len(f[0]) for f in format)
+
+    lines = []
+
+    for fieldname, field, default, field_fmt, is_child in format:
+        offset = indent if is_child else fieldname_align_width + 2
+
+        result = _format(d.get(field, default), field_fmt).split('\n')
+
+        fieldname = getattr(fieldname + ":", justify)(fieldname_align_width + 1)
+        for i, line in enumerate(result):
+            if i == 0:
+                if not is_child:
+                    lines.append(["{} {}".format(fieldname, line)])
+                    continue
+
+                lines.append(["{}".format(fieldname)])
+
+            lines.append([indent_char * offset, line])
+
+    return '\n'.join(''.join(line) for line in lines)
 
 
 class Database(object):
@@ -391,7 +510,6 @@ class LeappDatabase(Database):
 
         return dialogs
 
-
     def get_status(self):
         """
         Return status of the execution
@@ -406,7 +524,6 @@ class LeappDatabase(Database):
           TODO: investigate the messages in audit whether it is possible to
                 detect it
         """
-        # TODO: WORK FOR ME WEEEEEE
         raise NotImplementedError()
 
     def _get_cmd_results(self, phase=None, actor=None, failed_only=False):
@@ -533,17 +650,6 @@ class LeappDataPrinter(LeappDatabase):
         return json.dumps(json_data, indent=4, sort_keys=True)
 
     @staticmethod
-    def _fmt_as_bullet_points(t):
-        lines = ['']
-        for entry in t:
-            lines.append("    - {}".format(entry))
-
-        if not t:
-            lines.append("    ----")
-
-        return '\n'.join(lines)
-
-    @staticmethod
     def print_message(msg, recursive=False):
         for i in ("stamp", "actor", "phase", "type"):
             print("{}: {}".format(i.capitalize(), msg[i]))
@@ -580,9 +686,6 @@ class LeappDataPrinter(LeappDatabase):
         """
 
         def get_metadata(actor_name):
-            # this could be possibly later replace by function like
-            # self.get_actor(actor_name)
-            # of course, with additional data like produced msgs, ....
             metadata = self.get_entity_metadata('actor', actor_name)
 
             actors_regexp = re.compile(r"Executing actor ([^\s]+)")
@@ -602,40 +705,64 @@ class LeappDataPrinter(LeappDatabase):
         actor["exit_status"] = self.get_actor_exit_status(actor_name)
         actor["msgs"] = [msg["type"] for msg in self.get_messages(actor=actor_name)]
 
-        fields = [
+        indicator = "○" if actor["exit_status"] is None else "●"
+        color = Color.blue
+        if actor["exit_status"] == 0:
+            color = Color.green
+        elif actor["exit_status"] == 1:
+            color = Color.red
+
+        print("{color}{indicator}{reset} {actor_name}".format(
+            color=color, indicator=indicator, reset=Color.reset, actor_name=actor_name))
+
+        list_style = {
+            "indent_char": " ", "list_bullet": "- ",
+            "list_start": "├ ", "list_continue": "│ ", "list_end": "└ ",
+            "list_empty": "---"}
+        actor_fmt = [
             # (field to print, field, default value, fn)
-            ("Actor", "name", "", _id),
-            ("Class", "class_name", "", _id),
-            ("Path", "path", "", _id),
-            ("Exit Status", "exit_status", None, _id),
-            ("Executed", "stamp", None, lambda _: _ is not None),
-            ("Started", "stamp", None, lambda _: _ or "---"),
-            ("Phase", "phase", "", _id),
-            ("Tags", "tags", (), LeappDataPrinter._fmt_as_bullet_points),
-            ("Consumes", "consumes", (), LeappDataPrinter._fmt_as_bullet_points),
-            ("Produces", "produces", (), LeappDataPrinter._fmt_as_bullet_points),
-            ("Produced during execution", "msgs", (), LeappDataPrinter._fmt_as_bullet_points),
-            ("Description", "description", "", _id),
+            ("Actor", "name", "", None, False),
+            ("Class", "class_name", "", None, False),
+            ("Description", "description", "", None, True),
+            ("Path", "path", "", None, False),
+            ("Exit Status", "exit_status", None, None, False),
+            ("Executed", "stamp", None, lambda _: _ is not None, False),
+            ("Started", "stamp", None, lambda _: _ or "---", False),
+            ("Phase", "phase", "", None, False),
+            ("Tags", "tags", (), lambda _: format_list(_, **list_style), True),
+            ("Consumes", "consumes", (), lambda _: format_list(_, **list_style), True),
+            ("Produces", "produces", (), lambda _: format_list(_, **list_style), True),
+            ("Produced", "msgs", (), lambda _: format_list(_, **list_style), True),
         ]
-        for print_field, field, default, fn in fields:
-            print("{}: {}".format(print_field, fn(actor.get(field, default))))
+        print(format_dict(actor, actor_fmt))
+        print()
 
-        print("Dialogs:")
         dialogs = self.get_dialogs(actor_name)
-        for dialog in dialogs:
-            data = dialog["data"]
-            print("    Title: {}".format(data.get("title", None)))
-            print("    Reason: {}".format(data.get("reason", None)))
-            for component in data["components"]:
-                print("        Label: {}".format(component.get("label", "NO-LABEL")))
-                print("        Description: {}".format(component.get("description", None) or "----"))
-                print("        Reason: {}".format(component.get("reason", None) or "----"))
-                print("        Key: {}".format(component.get("key", None) or "----"))
-                print("        Value: {}".format(component.get("value", None) or "----"))
-        if not dialogs:
-            print("    ----")
 
-        print("Executed shell commands:")
+        def component_fmt(comp):
+            fmt = [
+                ("Label", "label", "", None, False),
+                ("Description", "description", "", None, False),
+                ("Reason", "reason", "", None, False),
+                ("Key", "key", "", None, False),
+                ("Value", "value", "", None, False),
+            ]
+            return format_dict(comp, format=fmt)
+
+        def dialog_fmt(dialog):
+            fmt = [
+                ("Title", "title", "", None, False),
+                ("Reason", "reason", "", None, False),
+                ("Components", "components", [], lambda _: format_list(
+                    _, fmt=component_fmt, **list_style), True),
+            ]
+            return format_dict(dialog["data"], format=fmt)
+
+        if dialogs:
+            print("Dialogs:")
+            print(format_list(dialogs, fmt=dialog_fmt, **list_style))
+            print()
+
         # NOTE(pstodulk): That regular is terrible, I know
         # be aware that order of json fields in the log is different on
         # py2 and py3
@@ -645,21 +772,21 @@ class LeappDataPrinter(LeappDatabase):
             match = cmd_regexp.search(log["data"])
             if match:
                 cmds.append(match.group(1))
+
         if cmds:
+            print("Executed shell commands:")
             for cmd in cmds:
                 print("    - {}".format(cmd))
-        else:
-            print("    ----")
 
-        print("Logs:")
-        log = None
-        for log in self.get_logs(actor=actor_name, log_level=log_level):
+        logs = self.get_logs(actor=actor_name, log_level=log_level)
+        for i, log in enumerate(logs):
+            if i == 0:
+                print("Logs:")
+
             if terminal_like_logs:
                 print("    {}".format(json.loads(log["data"])["message"]))
             else:
                 print("--- {}".format(log["data"]))
-        if not log:
-            print("    ----")
 
     def print_actors(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
         """
@@ -688,37 +815,34 @@ class LeappDataPrinter(LeappDatabase):
             print("Workflow {} not found!".format(workflow_name), file=sys.stderr)
             return
 
-        fields = [
-            # (field to print, field, default value, fn)
-            ("Name", "name", "", _id),
-            ("Short Name", "short_name", "", _id),
-            ("Tag", "tag", "", _id),
-            ("Description", "description", "", _id),
-        ]
-        for print_field, field, default, fn in fields:
-            print("{}: {}".format(print_field, fn(workflow.get(field, default))))
-
-        phases = sorted(
+        workflow['phases'] = sorted(
             workflow.get("phases", list()),
             key=lambda phase: phase["index"]
         )
-        print("Phases:")
-        for phase in phases:
-            print("   │ ")
-            print("   v ", "Name:", phase['name'])
-            print("   │ ", "Class Name:", phase['class_name'])
-            print("   │ ", "Index:", phase['index'])
-            print("   │ ", "Policies:")
-            for policy in phase['policies']:
-                print(" " * 3 + "│" + "      -", "{}:".format(policy), phase['policies'][policy])
-            print("   │ ", "Flags:")
-            for flag in phase['flags']:
-                print(" " * 3 + "│" + "      -", "{}:".format(flag), phase['flags'][flag])
-            print("   │ ", "Filter:")
-            for filter in phase['filter']:
-                print(" " * 3 + "│" + "      -", "{}:".format(filter), phase['filter'][filter])
-            print("   │ ")
-            print("   ├" + "─" * 20)
+
+        list_style = {
+            "indent_char": "  ", "list_bullet": "● ",
+            "list_start": "│\n●  ", "list_continue": "│  ", "list_end": "└  ",
+            "list_empty": "---"}
+        def phase_fmt(phase):
+            fmt = [
+                ("Name", "name", "", None, False),
+                ("Class name", "class_name", "", None, False),
+                ("Index", "index", "", None, False),
+                ("Policies", "policies", [], format_dict, True),
+                ("Flags", "flags", [], format_dict, True),
+                ("Filter", "filter", [], format_dict, True),
+            ]
+            return format_dict(phase, format=fmt)
+        workflow_fmt = [
+            ("Name", "name", "", None, False),
+            ("Short Name", "short_name", "", None, False),
+            ("Tag", "tag", "", None, False),
+            ("Description", "description", "", None, False),
+            ("Phases", "phases", [], lambda _: format_list(_, fmt=phase_fmt, **list_style), True)
+        ]
+        print(format_dict(workflow, format=workflow_fmt))
+
 
     def print_workflows(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
         """
