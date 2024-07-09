@@ -76,126 +76,6 @@ def print_rows(rows):
     for row in rows:
         print_row(row)
 
-class Color(object):
-    reset = "\033[0m" if sys.stdout.isatty() else ""
-    bold = "\033[1m" if sys.stdout.isatty() else ""
-    red = "\033[1;31m" if sys.stdout.isatty() else ""
-    green = "\033[1;32m" if sys.stdout.isatty() else ""
-    yellow = "\033[1;33m" if sys.stdout.isatty() else ""
-    blue = "\033[1;34m" if sys.stdout.isatty() else ""
-
-def _id(x):
-    return str(x)
-
-
-def _format(elem, fmt):
-    """
-    Format given element using given format specification
-    """
-
-    if fmt is None:
-        fmt = _id
-
-    if callable(fmt):
-        return str(fmt(elem))
-
-    if isinstance(elem, Mapping):
-        return format_dict(elem, fmt)
-
-    if isinstance(elem, Iterable):
-        return format_list(elem, fmt)
-
-    assert ValueError("Formatting {} with {} not implemented!".format(type(elem), fmt))
-
-
-def format_list(
-        t,
-        fmt=None,
-        indent_char="  ", list_bullet="- ",
-        list_start=None, list_continue=None, list_end=None,
-        list_empty="---",
-):
-    """
-    Format given list
-
-    transform can be:
-     - function => applies function to all elements of the list
-     - list => assumes a list of transforms. must be same size az the list
-    """
-
-    list_start = list_start or list_bullet
-    list_continue = list_continue or indent_char
-    list_end = list_end or list_bullet
-
-    if not t:
-        return list_empty
-
-    # Validate and normalize format specification
-    if isinstance(fmt, list):
-        if len(fmt) != len(t):
-            msg = "The fmt is of type {} and size {} which does not match the input size {}!".format(
-                type(fmt), len(fmt), len(t))
-            raise ValueError(msg)
-
-        transform = iter(fmt)
-    else:
-        transform = itertools.repeat(fmt)
-
-    lines = []
-    for elem, tr in zip(t, transform):
-        result = _format(elem, tr).split('\n')
-
-        lines.append([list_start, result[0]])
-        for i in range(1, len(result)):
-            lines.append([list_continue, result[i]])
-
-    if lines:
-        lines[-1][0] = list_end
-
-    return '\n'.join(''.join(line) for line in lines)
-
-
-def format_dict(d, format=None, indent=4, indent_char=" ", empty_field="---", justify="ljust"):
-    """
-    Format given dict
-
-    transform can be:
-     - function => applies function to all elements of the list
-     - list => assumes a list of transforms. must be same size az the list
-    """
-
-    if not d:
-        return empty_field
-
-    if isinstance(format, Iterable):
-        for fmt in format:
-            if isinstance(fmt, tuple) and len(fmt) != 5:
-                msg = "Entry {} is not a valid format specification".format(fmt)
-                raise ValueError(msg)
-    else:
-        format = [(key, key, None, format, False) for key in d]
-
-    fieldname_align_width = max(len(f[0]) for f in format)
-
-    lines = []
-
-    for fieldname, field, default, field_fmt, is_child in format:
-        offset = indent if is_child else fieldname_align_width + 2
-
-        result = _format(d.get(field, default), field_fmt).split('\n')
-
-        fieldname = getattr(fieldname + ":", justify)(fieldname_align_width + 1)
-        for i, line in enumerate(result):
-            if i == 0:
-                if not is_child:
-                    lines.append(["{} {}".format(fieldname, line)])
-                    continue
-
-                lines.append(["{}".format(fieldname)])
-
-            lines.append([indent_char * offset, line])
-
-    return '\n'.join(''.join(line) for line in lines)
 
 
 class Database(object):
@@ -373,6 +253,7 @@ class LeappDatabase(Database):
 
         cmd = ("SELECT name FROM entity"
                " WHERE kind = '{kind}' AND context = '{context}'"
+               " ORDER BY id ASC"
                .format(kind=kind, context=self._context))
         results = self.execute(cmd).fetchall()
 
@@ -405,7 +286,7 @@ class LeappDatabase(Database):
 
     def get_actors(self):
         """
-        Return a set of discovered actors
+        Return a set of discovered actors (in alphabetical order)
         """
 
         return self.get_entities('actor')
@@ -588,6 +469,15 @@ class LeappDatabase(Database):
         return self.get_messages(msg_type="Report")
 
 
+class Color(object):
+    reset = "\033[0m" if sys.stdout.isatty() else ""
+    bold = "\033[1m" if sys.stdout.isatty() else ""
+    red = "\033[1;31m" if sys.stdout.isatty() else ""
+    green = "\033[1;32m" if sys.stdout.isatty() else ""
+    yellow = "\033[1;33m" if sys.stdout.isatty() else ""
+    blue = "\033[1;34m" if sys.stdout.isatty() else ""
+
+
 class LeappDataPrinter(LeappDatabase):
     """
     Print various leapp data in suitable format for reading.
@@ -618,6 +508,120 @@ class LeappDataPrinter(LeappDatabase):
 
     def _print_tail(self):
         self._print_separator(full=True)
+
+    @staticmethod
+    def _id(x):
+        return str(x)
+
+    @staticmethod
+    def _format(elem, fmt):
+        """
+        Format given element using given format specification
+        """
+
+        if fmt is None:
+            fmt = LeappDataPrinter._id
+
+        if callable(fmt):
+            return str(fmt(elem))
+
+        if isinstance(elem, Mapping):
+            return LeappDataPrinter.format_dict(elem, fmt)
+
+        if isinstance(elem, Iterable):
+            return LeappDataPrinter.format_list(elem, fmt)
+
+        assert ValueError("Formatting {} with {} not implemented!".format(type(elem), fmt))
+
+    @staticmethod
+    def format_list(
+            t,
+            fmt=None,
+            indent_char="  ", list_bullet="- ",
+            list_start=None, list_continue=None, list_end=None,
+            list_empty="---",
+    ):
+        """
+        Format given list
+
+        transform can be:
+         - function => applies function to all elements of the list
+         - list => assumes a list of transforms. must be same size az the list
+        """
+
+        list_start = list_start or list_bullet
+        list_continue = list_continue or indent_char
+        list_end = list_end or list_bullet
+
+        if not t:
+            return list_empty
+
+        # Validate and normalize format specification
+        if isinstance(fmt, list):
+            if len(fmt) != len(t):
+                msg = "The fmt is of type {} and size {} which does not match the input size {}!".format(
+                    type(fmt), len(fmt), len(t))
+                raise ValueError(msg)
+
+            transform = iter(fmt)
+        else:
+            transform = itertools.repeat(fmt)
+
+        lines = []
+        for elem, tr in zip(t, transform):
+            result = LeappDataPrinter._format(elem, tr).split('\n')
+
+            lines.append([list_start, result[0]])
+            for i in range(1, len(result)):
+                lines.append([list_continue, result[i]])
+
+        if lines:
+            lines[-1][0] = list_end
+
+        return '\n'.join(''.join(line) for line in lines)
+
+    @staticmethod
+    def format_dict(d, fmt=None, indent=4, indent_char=" ", empty_field="---", justify="ljust"):
+        """
+        Format given dict
+
+        transform can be:
+         - function => applies function to all elements of the list
+         - list => assumes a list of transforms. must be same size az the list
+        """
+
+        if not d:
+            return empty_field
+
+        if isinstance(fmt, Iterable):
+            for entry_fmt in fmt:
+                if isinstance(entry_fmt, tuple) and len(entry_fmt) != 5:
+                    msg = "Entry {} is not a valid format specification".format(entry_fmt)
+                    raise ValueError(msg)
+        else:
+            fmt = [(key, key, None, fmt, False) for key in d]
+
+        fieldname_align_width = max(len(f[0]) for f in fmt)
+
+        lines = []
+
+        for fieldname, field, default, field_fmt, is_child in fmt:
+            offset = indent if is_child else fieldname_align_width + 2
+
+            result = LeappDataPrinter._format(d.get(field, default), field_fmt).split('\n')
+
+            fieldname = getattr(fieldname + ":", justify)(fieldname_align_width + 1)
+            for i, line in enumerate(result):
+                if i == 0:
+                    if not is_child:
+                        lines.append(["{} {}".format(fieldname, line)])
+                        continue
+
+                    lines.append(["{}".format(fieldname)])
+
+                lines.append([indent_char * offset, line])
+
+        return '\n'.join(''.join(line) for line in lines)
 
     @staticmethod
     def _fmt_msg_data(data, recursive=False, stack=0):
@@ -715,22 +719,28 @@ class LeappDataPrinter(LeappDatabase):
             "indent_char": " ", "list_bullet": "- ",
             "list_start": "├ ", "list_continue": "│ ", "list_end": "└ ",
             "list_empty": "---"}
+
+        def pretty_actor_list(t):
+            return LeappDataPrinter.format_list(t, **list_style)
+
+        def lstrip_lines(s):
+            return '\n'.join(line.lstrip() for line in s.split('\n'))
+
         actor_fmt = [
-            # (field to print, field, default value, fn)
             ("Actor", "name", "", None, False),
             ("Class", "class_name", "", None, False),
-            ("Description", "description", "", None, True),
+            ("Description", "description", "", lstrip_lines, True),
             ("Path", "path", "", None, False),
             ("Exit Status", "exit_status", None, None, False),
             ("Executed", "stamp", None, lambda _: _ is not None, False),
             ("Started", "stamp", None, lambda _: _ or "---", False),
             ("Phase", "phase", "", None, False),
-            ("Tags", "tags", (), lambda _: format_list(_, **list_style), True),
-            ("Consumes", "consumes", (), lambda _: format_list(_, **list_style), True),
-            ("Produces", "produces", (), lambda _: format_list(_, **list_style), True),
-            ("Produced", "msgs", (), lambda _: format_list(_, **list_style), True),
+            ("Tags", "tags", (), pretty_actor_list, True),
+            ("Consumes", "consumes", (), pretty_actor_list, True),
+            ("Produces", "produces", (), pretty_actor_list, True),
+            ("Produced", "msgs", (), pretty_actor_list, True),
         ]
-        print(format_dict(actor, actor_fmt))
+        print(LeappDataPrinter.format_dict(actor, actor_fmt))
         print()
 
         dialogs = self.get_dialogs(actor_name)
@@ -743,20 +753,20 @@ class LeappDataPrinter(LeappDatabase):
                 ("Key", "key", "", None, False),
                 ("Value", "value", "", None, False),
             ]
-            return format_dict(comp, format=fmt)
+            return LeappDataPrinter.format_dict(comp, fmt=fmt)
 
         def dialog_fmt(dialog):
             fmt = [
                 ("Title", "title", "", None, False),
                 ("Reason", "reason", "", None, False),
-                ("Components", "components", [], lambda _: format_list(
+                ("Components", "components", [], lambda _: LeappDataPrinter.format_list(
                     _, fmt=component_fmt, **list_style), True),
             ]
-            return format_dict(dialog["data"], format=fmt)
+            return LeappDataPrinter.format_dict(dialog["data"], fmt=fmt)
 
         if dialogs:
             print("Dialogs:")
-            print(format_list(dialogs, fmt=dialog_fmt, **list_style))
+            print(LeappDataPrinter.format_list(dialogs, fmt=dialog_fmt, **list_style))
             print()
 
         # NOTE(pstodulk): That regular is terrible, I know
@@ -826,20 +836,20 @@ class LeappDataPrinter(LeappDatabase):
                 ("Name", "name", "", None, False),
                 ("Class name", "class_name", "", None, False),
                 ("Index", "index", "", None, False),
-                ("Policies", "policies", [], format_dict, True),
-                ("Flags", "flags", [], format_dict, True),
-                ("Filter", "filter", [], format_dict, True),
+                ("Policies", "policies", [], LeappDataPrinter.format_dict, True),
+                ("Flags", "flags", [], LeappDataPrinter.format_dict, True),
+                ("Filter", "filter", [], LeappDataPrinter.format_dict, True),
             ]
-            return format_dict(phase, format=fmt)
+            return LeappDataPrinter.format_dict(phase, fmt=fmt)
 
         workflow_fmt = [
             ("Name", "name", "", None, False),
             ("Short Name", "short_name", "", None, False),
             ("Tag", "tag", "", None, False),
             ("Description", "description", "", None, False),
-            ("Phases", "phases", [], lambda _: format_list(_, fmt=phase_fmt, **list_style), True)
+            ("Phases", "phases", [], lambda _: LeappDataPrinter.format_list(_, fmt=phase_fmt, **list_style), True)
         ]
-        print(format_dict(workflow, format=workflow_fmt))
+        print(LeappDataPrinter.format_dict(workflow, fmt=workflow_fmt))
 
     def print_workflows(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
         """
@@ -1244,8 +1254,25 @@ class ActorsCLI(SubCommandBaseClass):
         }
 
         if cmdline.list:
-            for actor in sorted(actors_dict[cmdline.list]()):
-                print("    {}".format(actor))
+            actors = actors_dict[cmdline.list]()
+            # NOTE(dkubek): uncomment if want to print in alphabetical order
+            # actors = sorted(actors)
+            for actor in actors:
+                exit_status = self.LeappDatabase.get_actor_exit_status(actor)
+
+                symbol = "○" if exit_status is None else "●"
+                color = Color.blue
+                if exit_status == 0:
+                    color = Color.green
+                elif exit_status == 1:
+                    color = Color.red
+
+                indicator = ""
+                if sys.stdout.isatty():
+                    indicator = "{color}{symbol}{reset} ".format(
+                        color=color, symbol=symbol, reset=Color.reset)
+
+                print("{}{}".format(indicator, actor))
             return
         if cmdline.actor:
             self.LeappDataPrinter.print_actor(
