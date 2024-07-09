@@ -243,8 +243,7 @@ class Database(object):
         """
         Get list of tables.
         """
-        cursor = self.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")
+        cursor = self.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return [row["name"] for row in cursor.fetchall()]
 
     def get_table_info(self, table):
@@ -569,8 +568,7 @@ class LeappDatabase(Database):
         # - Keep it as it is (it's not convenient, but....)
         # ... and it this function/method really good idea at all?
 
-        errors = self.get_messages(
-            msg_type="ErrorModel", phase=phase, actor=actor)
+        errors = self.get_messages(msg_type="ErrorModel", phase=phase, actor=actor)
 
         if check_logs:
             for log in self.get_logs(phase=phase, actor=actor, log_level=LogLevels.ERROR):
@@ -603,8 +601,7 @@ class LeappDataPrinter(LeappDatabase):
     SIMPLE_SEP_CHAR = "-"
 
     def __init__(self, db_file='leapp.db', context=None):
-        super(LeappDataPrinter, self).__init__(
-            db_file=db_file, context=context)
+        super(LeappDataPrinter, self).__init__(db_file=db_file, context=context)
         self._width = 70
 
     def _print_header(self, header_title):
@@ -653,8 +650,7 @@ class LeappDataPrinter(LeappDatabase):
     def print_message(msg, recursive=False):
         for i in ("stamp", "actor", "phase", "type"):
             print("{}: {}".format(i.capitalize(), msg[i]))
-        data = LeappDataPrinter._fmt_msg_data(
-            msg["message_data"], recursive=recursive)
+        data = LeappDataPrinter._fmt_msg_data(msg["message_data"], recursive=recursive)
         print("Message_data:\n{}".format(data))
 
     def print_messages(self, actor=None, phase=None, msg_type=None, recursive=False):
@@ -824,6 +820,7 @@ class LeappDataPrinter(LeappDatabase):
             "indent_char": "  ", "list_bullet": "● ",
             "list_start": "│\n●  ", "list_continue": "│  ", "list_end": "└  ",
             "list_empty": "---"}
+
         def phase_fmt(phase):
             fmt = [
                 ("Name", "name", "", None, False),
@@ -834,6 +831,7 @@ class LeappDataPrinter(LeappDatabase):
                 ("Filter", "filter", [], format_dict, True),
             ]
             return format_dict(phase, format=fmt)
+
         workflow_fmt = [
             ("Name", "name", "", None, False),
             ("Short Name", "short_name", "", None, False),
@@ -842,7 +840,6 @@ class LeappDataPrinter(LeappDatabase):
             ("Phases", "phases", [], lambda _: format_list(_, fmt=phase_fmt, **list_style), True)
         ]
         print(format_dict(workflow, format=workflow_fmt))
-
 
     def print_workflows(self, log_level=LogLevels.DEBUG, terminal_like_logs=True):
         """
@@ -922,8 +919,7 @@ class SubCommandBaseClass():
         if type(self) is SubCommandBaseClass:
             raise Exception("The base class cannot be instantiated directly.")
         if not isinstance(leapp_inspector_cli, LeappInspectorCLI):
-            raise ValueError(
-                "leapp_inspector_cli must be instance of LeappInspectorCLI")
+            raise ValueError("leapp_inspector_cli must be instance of LeappInspectorCLI")
         self.li_cli = leapp_inspector_cli
         self._register_cmd()
 
@@ -1351,8 +1347,7 @@ class InspectionCLI(SubCommandBaseClass):
                 print("==> {}  ({})".format(name, phase_type))
             else:
                 print("====> {}".format(name))
-            errors = ldp.get_errors(
-                actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
+            errors = ldp.get_errors(actor=name, check_logs=True, check_cmd_exit=self.cmdline.is_paranoid)
             if not errors:
                 continue
             ldp._print_separator(msg="(Possible) Errors")
