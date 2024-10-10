@@ -733,8 +733,8 @@ class LeappDataPrinter(LeappDatabase):
             color=color, indicator=indicator, reset=Color.reset, actor_name=actor_name))
 
         list_style = {
-            "indent_char": " ", "list_bullet": "- ",
-            "list_start": "├ ", "list_continue": "│ ", "list_end": "└ ",
+            "indent_char": " ", "list_bullet": "── ",
+            "list_start": "├─ ", "list_continue": "│  ", "list_end": "└─ ",
             "list_empty": "---"}
 
         def pretty_list(t):
@@ -742,6 +742,36 @@ class LeappDataPrinter(LeappDatabase):
 
         def lstrip_lines(s):
             return '\n'.join(line.lstrip() for line in s.split('\n'))
+
+        def recursive_format_dict(field):
+            if not isinstance(field, dict):
+                if isinstance(field, str):
+                    return lstrip_lines(field)
+                return field
+
+            ans = {}
+            for key in field:
+                ans[key] = recursive_format_dict(field[key])
+
+            return LeappDataPrinter.format_dict(ans)
+
+        def format_config(config):
+            config_fmt = [
+                ("Class", "class_name", "", None, False),
+                ("Section", "section", "", None, False),
+                ("Name", "name", "", None, False),
+                ("Description", "description", "", lstrip_lines, True),
+                ("Type", "type", "", recursive_format_dict, False),
+                ("Default", "default", "", None, False),
+            ]
+
+            return LeappDataPrinter.format_dict(config, fmt=config_fmt)
+
+        def format_config(config):
+            return recursive_format_dict(config)
+
+        def format_config_schemas(t):
+            return LeappDataPrinter.format_list(t, fmt=format_config, **list_style)
 
         actor_fmt = [
             ("Actor", "name", "", None, False),
@@ -753,6 +783,8 @@ class LeappDataPrinter(LeappDatabase):
             ("Started", "stamp", None, lambda _: _ or "---", False),
             ("Phase", "phase", "", None, False),
             ("Tags", "tags", (), pretty_list, True),
+            ("Config Schemas", "config_schemas", (), format_config_schemas, True),
+            ("Config", "config", {}, format_config, True),
             ("Consumes", "consumes", (), pretty_list, True),
             ("Produces", "produces", (), pretty_list, True),
             ("Produced", "msgs", (), pretty_list, True),
