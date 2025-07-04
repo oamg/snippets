@@ -17,7 +17,7 @@ _get_dbfile() {
     local use_next=0
     for word in "${COMP_WORDS[@]}"; do
        if [[ "$use_next" == "1" ]]; then
-           [[ -e "$word" ]] || return 1
+           # Check if file exists, but still return the path
            echo "$word"
            return 0
        fi
@@ -40,7 +40,7 @@ _get_context() {
     local use_next=0
     for word in "${COMP_WORDS[@]}"; do
        if [[ "$use_next" == "1" ]]; then
-           [[ -e "$word" ]] || return 1
+           # Check if file exists, but still return the path
            echo "$word"
            return 0
        fi
