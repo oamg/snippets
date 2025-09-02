@@ -1,0 +1,138 @@
+#compdef leapp-inspector
+
+_leapp_inspector_executed_actors() {
+  command -v leapp-inspector >/dev/null || {
+    return 1
+  }
+
+  actors=(${(f)"$(${=base_cmd} actors --list-executed | tr -s '[:space:]\n' '\n')"})
+  actors=("${(@)actors##[[:space:]]##}") # trim leading whitespace
+  _describe 'actor names' actors
+}
+
+_leapp_inspector_messages_list() {
+  command -v leapp-inspector >/dev/null || {
+    return 1
+  }
+
+  types=(${(f)"$(${=base_cmd} messages --list | tr -s '[:space:]\n' '\n')"})
+  types=("${(@)types##[[:space:]]##}") # trim leading whitespace
+  _describe 'message types' types
+}
+
+_leapp_inspector_phases_list() {
+  command -v leapp-inspector >/dev/null || {
+    return 1
+  }
+
+  phases=(${(f)"$(${=base_cmd} messages | grep "^Phase" | cut -f 2 -d ":" | sort -u)"})
+  phases=("${(@)phases##[[:space:]]##}") # trim leading whitespace
+  _describe 'phases' phases
+}
+
+_leapp_inspector_subcommands() {
+  command -v leapp-inspector >/dev/null || {
+    _describe 'commands' (help actors messages executions interactive inspecion)
+      return
+    }
+
+  local -a subcmds
+  temp=$(
+    leapp-inspector help \
+      | grep -A1 -m1 "^Subcommands:" \
+      | tail -n1
+    )
+    temp=${temp#*\{} # strip leading whitespace and }
+    temp=${temp%\}*} # strip trailing } and whitespace
+    subcmds=(${(s:,:)temp}) # split on , into array
+      _describe 'command' subcmds
+    }
+
+  _leapp_inspector() {
+    local context state state_descr line
+    local -A opt_args
+
+    _arguments -C \
+      '(-h --help)'{-h,--help}'[show help message]' \
+      '--db[specify database file]:file:_files' \
+      '--context[specify context]:context:->ctx' \
+      '1:subcommand:_leapp_inspector_subcommands' \
+      '*::arg:->args' && return 0
+
+    local -a cmd_args
+    local db=${opt_args[--db]}
+
+    if [[ -n "$db" ]]; then 
+      cmd_args+=("--db $db")
+    elif [[ ! -e leapp.db && ! -e /var/lib/leapp/leapp.db ]]; then
+      # --db is not specified and the default locations don't exist, we can't complete
+      return 1
+    fi
+
+    local ctx=${opt_args[--ctx]}
+    [[ -n "$ctx" ]] && cmd_args+=("--context $ctx")
+
+    local -a base_cmd
+    base_cmd=("leapp-inspector ${cmd_args[@]}")
+
+    case $state in
+      ctx)
+        # do this here since we have easy access to the dbfile
+        local -a ctx
+        ctxs=(${(f)"$("${=base_cmd}" executions 2>/dev/null | grep -o "^[0-9a-f][^ ]*")"})
+        _describe -t contexts 'available contexts' ctxs
+        ;;
+      args)
+        # NOTE: _arguments allows specifying a callback function in place
+        # of the e.g. '->actor', however the callbacks can get executed
+        # directly, i.e. without any of the variables in this
+        # (_leapp_inspector) function.
+        # The base_cmd variable is however essential for the helpers to
+        # properly (with the specified DB and context) execute
+        # leapp-inspector. For this reason callbacks are not used and we
+        # call the helpers ourselves based on $state. This is slightly
+        # slower, but I havent found a better way.
+        case $words[1] in
+          actors)
+            # NOTE:
+            # only one of the option inside parentheses can be specified
+            _arguments -C \
+              '(-h --help)'{-h,--help}'[show help message and exit]' \
+              '(--list-executed --list-producers --actor)--list-executed[list all executed actors]' \
+              '(--list-executed --list-producers --actor)--list-producers[list all actors that produced any messages]' \
+              '(--list-executed --list-producers --actor)--actor[print data related to specified actor]:actor name:->actor' \
+              '--log-level[print logs of given level and lower]:level:(ERROR WARNING INFO DEBUG)' \
+              '--terminal-like[print logs like in terminal with indentation]'
+            case $state in
+              actor) _leapp_inspector_executed_actors ;;
+            esac
+            ;;
+          messages)
+            _arguments -C \
+              '(-h --help)'{-h,--help}'[show help message and exit]' \
+              '--list[list types of all produced messages]' \
+              '--actor[print only messages produced by the actor]:actor:->actor' \
+              '--type[print only messages of the given type]:type:->type' \
+              '--phase[print only messages from the given phase]:phase:->phase' \
+              '--recursive-expand[expand all JSON data recursively]'
+            case $state in
+              actor) _leapp_inspector_executed_actors ;;
+              type) _leapp_inspector_messages_list ;;
+              phase) _leapp_inspector_phases_list ;;
+            esac
+            ;;
+          inspection)
+            _arguments \
+              '(-h --help)'{-h,--help}'[show help message and exit]' \
+              "--paranoid[set inspection to the paranoid mode]"
+            ;;
+          *)
+            _arguments \
+              '(-h --help)'{-h,--help}'[show help message and exit]'
+            ;;
+        esac
+        ;;
+    esac
+  }
+
+_leapp_inspector "$@"
