@@ -37,21 +37,25 @@ where Python2 is still present as default, change the shebang (the first line
 of the script) from python3 to python2 to make the tool working for you. The tooling
 is now Python2 & Python3 compatible.
 
-### Install the bash-completion for leapp-inspector
+### Shell completion
+Instructions below for your prefered shell.
+
+#### bash
+Install the bash-completion for leapp-inspector
 For convenient use, the bash-completion file is located under the bash-completion
 directory. To install it, just copy it under your bash-completion. If you want
 to specify bash-completion on the user level, do somethin like that:
 1. create ~/.bash\_completion.d directory
 1. copy the script inside
 1. create user's ~/.bash\_completion configuration script:
-```
+```bash
 for bcfile in $(find ~/.bash_completion.d/ -type f -exec grep -Iq . {} \; -print) ; do
   . $bcfile
 done
 ```
 
 or just copy&paste this script:
-```
+```bash
 leapp_inspector_bcomp_url=https://raw.githubusercontent.com/oamg/snippets/master/scripts/leappinspector/completion/leapp-inspector.bash
 mkdir ~/.bash_completion.d
 curl -kL $leapp_inspector_bcomp_url > ~/.bash_completion.d/leapp-inspector.bash
@@ -64,8 +68,38 @@ EOF
 
 If you do everything correct, the bash-completion will be loaded the next time
 you login or when you manually execute:
-```
+```bash
 source ~/.bash_completion
+```
+
+#### zsh
+> [!IMPORTANT]
+> You need to have the completion module loaded in for the completions to work.
+> This is outside of the scope of these instructions, but `autoload -Uz
+> compinit; compinit` should do it.
+
+> [!IMPORTANT]
+> These instructions were tested on a zsh install without `oh-my-zsh`.
+> In `oh-my-zsh`, there is the `~/.oh-my-zsh/completions/` directory for
+> completions, however we recommend to look in the `oh-my-zsh` documentation
+> for instructions.
+
+There isn't a standard directory for user-defined completions for zsh. Instead
+zsh looks in directories in `fpath` (`$FPATH`). This guide is therefore more of
+an example, tailor it to your config:
+```sh
+# create a directory for completions
+if [ -z "$ZDOTDIR"]; then
+    comp_dir = "$ZDOTDIR/completion"
+else
+    # add an intermediate .zsh dir to avoid cluttering $HOME
+    comp_dir = "$HOME/.zsh/completion"
+fi
+mkdir -p "$comp_dir"
+
+# add the dir to fpath automatically
+echo "fpath+=("$comp_dir")" >> zshrc=${ZDOTDIR:-$HOME}/.zshrc
+cp completion/_leapp-inspector  "$comp_dir"
 ```
 
 ## How to use the tool
@@ -73,7 +107,7 @@ source ~/.bash_completion
 The most simple use of the tool is execute it in the direcotry with the leapp
 db file (usually `leapp.db`) and use a subcommand you wish to get some data.
 E.g.
-```
+```bash
  # to print all messages produced by actors
  leapp-inspector messages
 
