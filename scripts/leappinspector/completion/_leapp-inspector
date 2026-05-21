@@ -32,7 +32,7 @@ _leapp_inspector_phases_list() {
 
 _leapp_inspector_subcommands() {
   command -v leapp-inspector >/dev/null || {
-    _describe 'commands' (help actors messages executions interactive inspecion)
+    _describe 'commands' (help actors messages executions interactive inspecion config-data)
       return
     }
 
