@@ -21,6 +21,7 @@ except ImportError:
     # for Python2 (we do not want to make dependency on the six library)
     from ConfigParser import SafeConfigParser as ConfigParser
 
+# do NOT remove - unused, but useful in the interactive mode or for debugging
 from pprint import pprint as pp
 
 """
@@ -523,6 +524,29 @@ class LeappDatabase(Database):
         """
         return self.get_messages(msg_type="Report")
 
+    def get_config_data(self):
+        """
+        Get information about config data for the current context.
+        """
+        if not self._user_version_satisfied(4):  # configs introduced in ver 4
+            return []
+
+        # The way this is implemented in the framework, at the time of this
+        # commit, there can be any TEXT put into actor_config_data.config.
+        # leapp-repository generally only puts there a JSON with a single top
+        # level "dict" with sections being the keys
+        cmd = (
+            "SELECT acd.config FROM actor_config ac"
+            " JOIN actor_config_data acd ON ac.actor_config_hash = acd.hash"
+            " WHERE ac.context = '{context}'"
+        ).format(context=self._context)
+
+        # The framework also doesn't ensure that the hash is computed from the
+        # config, let's return all the rows though, the caller can then warn if
+        # there are multiple for some reason
+        results = self.execute(cmd).fetchall()
+
+        return [json.loads(row['config']) for row in results]
 
 class Color(object):
     reset = "\033[0m" if sys.stdout.isatty() else ""
@@ -800,6 +824,15 @@ class LeappDataPrinter(LeappDatabase):
         if stack > 0:
             return json_data
         return json.dumps(json_data, indent=4, sort_keys=True)
+
+    @staticmethod
+    def format_json_data(data, recursive=False):
+        """
+        :param data: Data in JSON format
+        :param resursive: Whether to expand nested JSON strings in values
+        """
+        # this is just a public wrapper of _fmt_msg_data to hide the stack argument
+        return LeappDataPrinter._fmt_msg_data(data, recursive)
 
     @staticmethod
     def print_message(msg, recursive=False):
@@ -1506,6 +1539,24 @@ class ActorsCLI(SubCommandBaseClass):
         )
 
 
+class ConfigDataCLI(SubCommandBaseClass):
+
+    name = "config-data"
+    help_short_str = "Print actor config data (not schemas)"
+
+    def set_arguments(self):
+        pass
+
+    def process(self):
+        self.LeappDataPrinter._print_header("Actor Configs Data")
+        configs = self.LeappDataPrinter.get_config_data()
+        if len(configs) > 1:
+            print("WARNING: Multiple entries found for the same config hash, possibly a bug?")
+        for config in configs:
+            data = LeappDataPrinter.format_json_data(json.dumps(config), recursive=False)
+            print(data)
+
+
 class ExecutionsCLI(SubCommandBaseClass):
 
     name = "executions"
@@ -1649,6 +1700,7 @@ def set_default_subcommands(cli):
     cli.add_subcommand(ExecutionsCLI)
     cli.add_subcommand(InteractiveCLI)
     cli.add_subcommand(InspectionCLI)
+    cli.add_subcommand(ConfigDataCLI)
 
 
 if __name__ == '__main__':

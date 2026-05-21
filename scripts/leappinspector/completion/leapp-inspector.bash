@@ -2,7 +2,7 @@ _get_subcommands() {
     # if the leapp-inspector command is not available, return predefined
     # set of subcommands
     command -v leapp-inspector >/dev/null || {
-        echo help actors messages executions interactive inspecion
+        echo help actors messages executions interactive inspecion config-data
         return
     }
     leapp-inspector help \
