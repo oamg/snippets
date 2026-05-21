@@ -890,7 +890,7 @@ class LeappDataPrinter(LeappDatabase):
 
             return LeappDataPrinter.format_dict(ans)
 
-        def format_config(config):
+        def format_config_schema(config):
             config_fmt = [
                 ("Class", "class_name", "", None, False),
                 ("Section", "section", "", None, False),
@@ -902,12 +902,9 @@ class LeappDataPrinter(LeappDatabase):
 
             return LeappDataPrinter.format_dict(config, fmt=config_fmt)
 
-        def format_config(config):
-            return recursive_format_dict(config)
-
         def format_config_schemas(t):
             if show_config:
-                return LeappDataPrinter.format_list(t, fmt=format_config, **list_style)
+                return LeappDataPrinter.format_list(t, fmt=format_config_schema, **list_style)
 
             return "[OPTIMIZED OUT]"
 
@@ -928,7 +925,9 @@ class LeappDataPrinter(LeappDatabase):
             ("Phase", "phase", "", None, False),
             ("Tags", "tags", None, pretty_list, True),
             ("Config Schemas", "config_schemas", None, format_config_schemas, show_config),
-            ("Config", "config", None, format_config, True),
+            # Actual config data are not stored in the actor metadata, but in a separate table
+            # In the future it might be printed here after somehow relating it to actor.
+            # ("Config", "config", None, format_config, True),
             ("Consumes", "consumes", None, pretty_list, True),
             ("Produces", "produces", None, pretty_list, True),
             ("Produced", "msgs", None, pretty_list, True),
