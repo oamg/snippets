@@ -204,6 +204,9 @@ _leapp_inspector_complete () {
             inspection)
                 _handle_subcmd_inspection
                 ;;
+            config-data)
+                COMPREPLY=( $(compgen -W "-h --help -f --format" -- "$cur") )
+                ;;
             *)
                 COMPREPLY=( $(compgen -W "-h --help" -- "$cur") )
                 ;;
