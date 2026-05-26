@@ -2,13 +2,14 @@
 
 import argparse
 import errno
+import itertools
 import json
 import os
 import re
 import socket
 import sqlite3
 import sys
-import itertools
+import yaml
 from collections.abc import Mapping, Iterable
 try:
     from json.decoder import JSONDecodeError
@@ -1545,7 +1546,14 @@ class ConfigDataCLI(SubCommandBaseClass):
     help_short_str = "Print actor config data (not schemas)"
 
     def set_arguments(self):
-        pass
+        self.subparser.add_argument(
+            "-f",
+            "--format",
+            dest="format",
+            default='json',
+            choices=("json", "yaml"),
+            help="output format to use",
+        )
 
     def process(self):
         self.LeappDataPrinter._print_header("Actor Configs Data")
@@ -1553,8 +1561,15 @@ class ConfigDataCLI(SubCommandBaseClass):
         if len(configs) > 1:
             print("WARNING: Multiple entries found for the same config hash, possibly a bug?")
         for config in configs:
-            data = LeappDataPrinter.format_json_data(json.dumps(config), recursive=False)
-            print(data)
+            if self.cmdline.format == 'json':
+                formatted = LeappDataPrinter.format_json_data(json.dumps(config), recursive=False)
+                print(formatted)
+            elif self.cmdline.format == 'yaml':
+                formatted = yaml.dump(config, sort_keys=False)
+                print(formatted)
+            else:
+                # shouldn't be allowed by arg parser
+                raise ValueError("Unexpected value for format: {}".format(self.cmdline.format))
 
 
 class ExecutionsCLI(SubCommandBaseClass):

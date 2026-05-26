@@ -126,6 +126,11 @@ _leapp_inspector_subcommands() {
               '(-h --help)'{-h,--help}'[show help message and exit]' \
               "--paranoid[set inspection to the paranoid mode]"
             ;;
+          config-data)
+            _arguments \
+              '(-h --help)'{-h,--help}'[show help message and exit]' \
+              '(-f --format)'{-f,--format}'[output format to use]' \
+            ;;
           *)
             _arguments \
               '(-h --help)'{-h,--help}'[show help message and exit]'
