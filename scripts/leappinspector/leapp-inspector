@@ -1187,7 +1187,7 @@ class LeappInspectorCLI:
 
     def __init__(self):
         # TODO: replace _cmd_func_map by parser.set_default(...)
-        self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
+        self._parser = argparse.ArgumentParser(prog="leapp-nspector")
         self._cmd_func_map = {}
         self._add_top_lvl_options()
         self._subparsers = self._parser.add_subparsers(
@@ -1288,7 +1288,7 @@ class LeappInspectorCLI:
             help=(
                 "Specify the USER_VERSION (the PRAGMA of the leapp database)"
                 " that should be used to determine the format and availability"
-                " of information in the leapp database. By defaul, USER_VERSION"
+                " of information in the leapp database. By default, USER_VERSION"
                 " is the latest version set in the database."
             )
         )
