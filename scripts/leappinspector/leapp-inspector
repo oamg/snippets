@@ -1193,6 +1193,7 @@ class SubCommandBaseClass():
             self.cmd_name,
             help=self.help_short,
         )
+        self.subparser.set_defaults(handler=self.process)
         self.set_arguments()
 
     @property
@@ -1219,9 +1220,7 @@ class LeappInspectorCLI:
     LEAPP_CONFIG_FILE = "/etc/leapp/leapp.conf"
 
     def __init__(self):
-        # TODO: replace _cmd_func_map by parser.set_default(...)
-        self._parser = argparse.ArgumentParser(prog="Leapp Inspector")
-        self._cmd_func_map = {}
+        self._parser = argparse.ArgumentParser(prog="leapp-nspector")
         self._add_top_lvl_options()
         self._subparsers = self._parser.add_subparsers(
             title="Subcommands",
@@ -1249,8 +1248,7 @@ class LeappInspectorCLI:
 
         Expected class derived from SubCommandBaseClass.
         """
-        subcmd = subcmd_class(self)
-        self._cmd_func_map[subcmd.cmd_name] = subcmd.process
+        subcmd_class(self)
 
     def parse(self):
         """
@@ -1266,11 +1264,12 @@ class LeappInspectorCLI:
         """
         if not self.cmdline:
             raise ValueError("Missing parsed CLI. Run self.parse() first.")
-        if self.cmdline.subcmd:
-            self._cmd_func_map[self.cmdline.subcmd]()
+
+        if hasattr(self.cmdline, "handler"):
+            self.cmdline.handler()
         else:
             # no subcommand specified -> print help
-            self._cmd_func_map["help"]()
+            self.print_help()
 
     @property
     def LeappDatabase(self):
@@ -1321,7 +1320,7 @@ class LeappInspectorCLI:
             help=(
                 "Specify the USER_VERSION (the PRAGMA of the leapp database)"
                 " that should be used to determine the format and availability"
-                " of information in the leapp database. By defaul, USER_VERSION"
+                " of information in the leapp database. By default, USER_VERSION"
                 " is the latest version set in the database."
             )
         )
